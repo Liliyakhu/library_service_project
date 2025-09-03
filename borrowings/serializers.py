@@ -1,9 +1,53 @@
 from rest_framework import serializers
 from django.utils import timezone
 
-from .models import Borrowing
+from borrowings.models import Borrowing
 from books.models import Book
 from books.serializers import BookSerializer
+
+
+class BorrowingCreateSerializer(serializers.ModelSerializer):
+    """Serializer for creating new borrowings"""
+
+    class Meta:
+        model = Borrowing
+        fields = [
+            "expected_return_date",
+            "book",
+        ]
+
+    def validate_book(self, value):
+        """Validate that the book is available for borrowing"""
+        if not value.is_available:
+            raise serializers.ValidationError("This book is currently not available for borrowing.")
+        return value
+
+    def validate_expected_return_date(self, value):
+        """Validate expected return date"""
+        today = timezone.now().date()
+
+        if value <= today:
+            raise serializers.ValidationError("Expected return date must be after today.")
+
+        # Optional: limit borrowing period (e.g., max 30 days)
+        max_days = 30
+        if (value - today).days > max_days:
+            raise serializers.ValidationError(f"Maximum borrowing period is {max_days} days.")
+
+        return value
+
+    def create(self, validated_data):
+        """Create a new borrowing with current user attached"""
+        # Get the current user from the request context
+        user = self.context['request'].user
+
+        # Create the borrowing with the current user
+        borrowing = Borrowing.objects.create(
+            user=user,
+            **validated_data
+        )
+
+        return borrowing
 
 
 class BorrowingDetailSerializer(serializers.ModelSerializer):
