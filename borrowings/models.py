@@ -3,6 +3,7 @@ from django.conf import settings
 from django.utils import timezone
 from django.core.exceptions import ValidationError
 from decimal import Decimal
+from datetime import datetime
 
 from books.models import Book
 
@@ -33,11 +34,6 @@ class Borrowing(models.Model):
                 | models.Q(actual_return_date__gte=models.F("borrow_date")),
                 name="actual_return_after_borrow",
             ),
-            # Borrow date cannot be in the future
-            models.CheckConstraint(
-                check=models.Q(borrow_date__lte=timezone.now().date()),
-                name="borrow_date_not_future",
-            ),
             # Expected return date should not be more than 1 year from borrow date
             models.CheckConstraint(
                 check=models.Q(
@@ -49,8 +45,15 @@ class Borrowing(models.Model):
         ]
 
     def clean(self):
-        """Additional validation that runs during model validation"""
         super().clean()
+
+        # Normalize to date
+        if isinstance(self.borrow_date, datetime):
+            self.borrow_date = self.borrow_date.date()
+        if isinstance(self.expected_return_date, datetime):
+            self.expected_return_date = self.expected_return_date.date()
+        if isinstance(self.actual_return_date, datetime):
+            self.actual_return_date = self.actual_return_date.date()
 
         # Validate borrow_date is not in the future
         if self.borrow_date and self.borrow_date > timezone.now().date():
@@ -76,7 +79,7 @@ class Borrowing(models.Model):
                     }
                 )
 
-        # Check if book is available for borrowing (only for new borrowings)
+        # Check if book is available
         if not self.pk and self.book and not self.book.is_available:
             raise ValidationError(
                 {"book": "This book is currently not available for borrowing."}
@@ -118,17 +121,27 @@ class Borrowing(models.Model):
 
     @property
     def is_overdue(self):
-        """Check if the book is overdue"""
+        """Check if borrowing is overdue (only when no actual_return_date)."""
         if self.actual_return_date:
-            return False  # Already returned
-        return timezone.now().date() > self.expected_return_date
+            return False
+        expected = (
+            self.expected_return_date.date()
+            if isinstance(self.expected_return_date, datetime)
+            else self.expected_return_date
+        )
+        return timezone.now().date() > expected
 
     @property
     def days_overdue(self):
-        """Calculate number of days overdue (returns 0 if not overdue)"""
+        """Return positive overdue days, or 0 if not overdue."""
         if not self.is_overdue:
             return 0
-        return (timezone.now().date() - self.expected_return_date).days
+        expected = (
+            self.expected_return_date.date()
+            if isinstance(self.expected_return_date, datetime)
+            else self.expected_return_date
+        )
+        return max((timezone.now().date() - expected).days, 0)
 
     @property
     def borrowing_days(self):
