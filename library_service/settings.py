@@ -48,7 +48,7 @@ INSTALLED_APPS = [
     "rest_framework_simplejwt",
     "books",
     "users",
-    "borrowings"
+    "borrowings",
 ]
 
 MIDDLEWARE = [
@@ -145,9 +145,14 @@ AUTH_USER_MODEL = "users.User"
 # }
 
 REST_FRAMEWORK = {
-    "DEFAULT_AUTHENTICATION_CLASSES": (
+    "DEFAULT_AUTHENTICATION_CLASSES": [
         "users.authentication.AuthorizeHeaderJWTAuthentication",
-    )
+    ],
+    "DEFAULT_PERMISSION_CLASSES": [
+        "rest_framework.permissions.IsAuthenticated",
+    ],
+    "DEFAULT_PAGINATION_CLASS": "rest_framework.pagination.PageNumberPagination",
+    "PAGE_SIZE": 20,
 }
 
 SIMPLE_JWT = {

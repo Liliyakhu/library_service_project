@@ -1,116 +1,87 @@
 from rest_framework import viewsets, status
 from rest_framework.decorators import action
-from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated
-from django.shortcuts import get_object_or_404
-from django.contrib.auth import get_user_model
+from rest_framework.response import Response
+from django.db import transaction
+from django.core.exceptions import ValidationError
 
-
-from borrowings.models import Borrowing
+from borrowings.permissions import IsOwnerOrStaff
 from borrowings.serializers import (
+    BorrowingCreateSerializer,
     BorrowingListSerializer,
     BorrowingDetailSerializer,
-    BorrowingCreateSerializer,
 )
-from borrowings.permissions import IsOwnerOrStaff
+from users.authentication import AuthorizeHeaderJWTAuthentication
+from borrowings.models import Borrowing
 
 
 class BorrowingViewSet(viewsets.ModelViewSet):
-    queryset = Borrowing.objects.all()
+    authentication_classes = [AuthorizeHeaderJWTAuthentication]
     permission_classes = [IsAuthenticated, IsOwnerOrStaff]
 
     def get_queryset(self):
-        """Filter borrowings based on user role and query parameters"""
-        queryset = Borrowing.objects.all()
+        """Optimized queryset with proper joins"""
+        qs = Borrowing.objects.select_related("book", "user")
 
-        # Get query parameters
-        is_active = self.request.query_params.get("is_active")
-        user_id = self.request.query_params.get("user_id")
-
-        # Apply user filtering based on role
-        if self.request.user.is_staff:
-            # Admin users can see all borrowings, but can filter by specific user
+        # User filtering
+        if not self.request.user.is_staff:
+            qs = qs.filter(user=self.request.user)
+        else:
+            user_id = self.request.query_params.get("user_id")
             if user_id:
                 try:
-                    user_id = int(user_id)
-                    queryset = queryset.filter(user_id=user_id)
+                    qs = qs.filter(user_id=int(user_id))
                 except (ValueError, TypeError):
-                    # Invalid user_id, return empty queryset
-                    queryset = queryset.none()
-        else:
-            # Regular users can only see their own borrowings
-            queryset = queryset.filter(user=self.request.user)
+                    qs = qs.none()
 
-        # Apply is_active filtering
-        if is_active is not None:
-            if is_active.lower() in ["true", "1"]:
-                # Show only active borrowings (not returned yet)
-                queryset = queryset.filter(actual_return_date__isnull=True)
-            elif is_active.lower() in ["false", "0"]:
-                # Show only returned borrowings
-                queryset = queryset.filter(actual_return_date__isnull=False)
+        # Active/inactive filtering
+        is_active = self.request.query_params.get("is_active")
+        if is_active == "true":
+            qs = qs.filter(actual_return_date__isnull=True)
+        elif is_active == "false":
+            qs = qs.filter(actual_return_date__isnull=False)
 
-        return queryset.order_by("id")
+        return qs.order_by("-borrow_date")
 
     def get_serializer_class(self):
-        """Return different serializers based on action"""
         if self.action == "create":
             return BorrowingCreateSerializer
         elif self.action == "list":
             return BorrowingListSerializer
-        elif self.action == "retrieve":
-            return BorrowingDetailSerializer
-
         return BorrowingDetailSerializer
 
+    @transaction.atomic
     def create(self, request, *args, **kwargs):
-        """Create a new borrowing"""
         serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
 
-        try:
-            borrowing = serializer.save()
-            # Return the detailed serializer data for the created borrowing
-            response_serializer = BorrowingDetailSerializer(borrowing)
-            return Response(response_serializer.data, status=status.HTTP_201_CREATED)
-        except Exception as e:
-            return Response({"error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
+        borrowing = serializer.save()
+        response_serializer = BorrowingDetailSerializer(borrowing)
+        return Response(response_serializer.data, status=status.HTTP_201_CREATED)
 
     def update(self, request, *args, **kwargs):
-        """Prevent updating borrowings (only return action should be allowed)"""
         return Response(
-            {"error": "Updating borrowings is not allowed. Use return action instead."},
-            status=status.HTTP_405_METHOD_NOT_ALLOWED,
-        )
-
-    def partial_update(self, request, *args, **kwargs):
-        """Prevent partial updating of borrowings"""
-        return Response(
-            {"error": "Updating borrowings is not allowed. Use return action instead."},
+            {"error": "Updating borrowings not allowed. Use return_book action."},
             status=status.HTTP_405_METHOD_NOT_ALLOWED,
         )
 
     def destroy(self, request, *args, **kwargs):
-        """Prevent deletion of borrowings"""
         return Response(
-            {"error": "Deleting borrowings is not allowed."},
+            {"error": "Deleting borrowings not allowed."},
             status=status.HTTP_405_METHOD_NOT_ALLOWED,
         )
 
     @action(detail=True, methods=["post"])
+    @transaction.atomic
     def return_book(self, request, pk=None):
-        """Custom action to return a borrowed book"""
         borrowing = self.get_object()
-
-        if borrowing.is_returned:
-            return Response(
-                {"error": "Book has already been returned."},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
 
         try:
             borrowing.return_book()
-            serializer = BorrowingDetailSerializer(borrowing)
-            return Response(serializer.data, status=status.HTTP_200_OK)
-        except Exception as e:
-            return Response({"error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
+        except ValidationError as e:
+            return Response({"error": e.message}, status=status.HTTP_400_BAD_REQUEST)
+
+        return Response(
+            BorrowingDetailSerializer(borrowing).data,
+            status=status.HTTP_200_OK
+        )
