@@ -4,6 +4,8 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from django.db import transaction
 from django.core.exceptions import ValidationError
+from django.utils.html import escape
+from notifications.telegram import send_telegram_message
 
 from borrowings.permissions import IsOwnerOrStaff
 from borrowings.serializers import (
@@ -41,7 +43,7 @@ class BorrowingViewSet(viewsets.ModelViewSet):
         elif is_active == "false":
             qs = qs.filter(actual_return_date__isnull=False)
 
-        return qs.order_by("-borrow_date")
+        return qs.order_by("-id")
 
     def get_serializer_class(self):
         if self.action == "create":
@@ -57,6 +59,24 @@ class BorrowingViewSet(viewsets.ModelViewSet):
 
         borrowing = serializer.save()
         response_serializer = BorrowingDetailSerializer(borrowing)
+
+        # Build a neat, HTML-safe message
+        b = borrowing
+        book = b.book
+        user = b.user
+        msg = (
+            "<b>📚 New Borrowing</b>\n"
+            f"👤 <b>User</b>: {escape(user.full_name)} ({escape(user.email)})\n"
+            f"📖 <b>Book</b>: {escape(book.title)} — {escape(book.author)}\n"
+            f"📅 <b>Borrowed</b>: {b.borrow_date:%Y-%m-%d}\n"
+            f"🗓️ <b>Due</b>: {b.expected_return_date:%Y-%m-%d}\n"
+            f"💸 <b>Daily fee</b>: {book.daily_fee}\n"
+            f"📦 <b>Inventory left</b>: {book.inventory}\n"
+            f"🧾 <b>ID</b>: {b.id}"
+        )
+        # Fire-and-forget; we don't block user if Telegram fails
+        send_telegram_message(msg)
+
         return Response(response_serializer.data, status=status.HTTP_201_CREATED)
 
     def update(self, request, *args, **kwargs):
@@ -82,6 +102,5 @@ class BorrowingViewSet(viewsets.ModelViewSet):
             return Response({"error": e.message}, status=status.HTTP_400_BAD_REQUEST)
 
         return Response(
-            BorrowingDetailSerializer(borrowing).data,
-            status=status.HTTP_200_OK
+            BorrowingDetailSerializer(borrowing).data, status=status.HTTP_200_OK
         )
