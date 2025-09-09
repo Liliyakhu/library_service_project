@@ -28,7 +28,9 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 # SECURITY WARNING: keep the secret key used in production secret!
 SECRET_KEY = os.environ["SECRET_KEY"]
 
-TELEGRAM_NOTIFICATIONS_ENABLED = os.getenv("TELEGRAM_NOTIFICATIONS_ENABLED", "False").lower() == "true"
+TELEGRAM_NOTIFICATIONS_ENABLED = (
+    os.getenv("TELEGRAM_NOTIFICATIONS_ENABLED", "False").lower() == "true"
+)
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
 
@@ -51,6 +53,7 @@ INSTALLED_APPS = [
     "debug_toolbar",
     "rest_framework",
     "rest_framework_simplejwt",
+    "django_celery_beat",
     "books",
     "users",
     "borrowings",
@@ -124,7 +127,7 @@ AUTH_PASSWORD_VALIDATORS = [
 
 LANGUAGE_CODE = "en-us"
 
-TIME_ZONE = "UTC"
+TIME_ZONE = "Europe/Kyiv"
 
 USE_I18N = True
 
@@ -166,3 +169,43 @@ SIMPLE_JWT = {
     "REFRESH_TOKEN_LIFETIME": timedelta(days=1),
     "ROTATE_REFRESH_TOKENS": False,
 }
+
+# Celery Configuration
+CELERY_BROKER_URL = os.environ.get("CELERY_BROKER_URL", "redis://localhost:6379/0")
+CELERY_RESULT_BACKEND = os.environ.get(
+    "CELERY_RESULT_BACKEND", "redis://localhost:6379/0"
+)
+# Result settings optimized for Flower
+CELERY_RESULT_EXTENDED = True
+CELERY_RESULT_EXPIRES = 3600 * 24  # Results expire after 1 day (lighter storage)
+CELERY_TASK_TRACK_STARTED = True
+CELERY_TASK_SEND_SENT_EVENT = True
+
+# Serialization
+CELERY_ACCEPT_CONTENT = ["json"]
+CELERY_TASK_SERIALIZER = "json"
+CELERY_RESULT_SERIALIZER = "json"
+
+# Timezone
+CELERY_TIMEZONE = "Europe/Kyiv"
+CELERY_ENABLE_UTC = False
+
+# Task execution settings
+CELERY_TASK_ALWAYS_EAGER = False
+CELERY_TASK_EAGER_PROPAGATES = True
+CELERY_TASK_STORE_EAGER_RESULT = False  # No need to store in eager mode
+
+# Worker settings for better Flower monitoring
+CELERY_WORKER_SEND_TASK_EVENTS = True
+CELERY_SEND_EVENTS = True
+
+# # Celery Beat (scheduler) settings
+# CELERY_BEAT_SCHEDULE = {
+#     'check-overdue-borrowings-daily': {
+#         'task': 'notifications.tasks.check_overdue_borrowings',
+#         'schedule': 60.0 * 60.0 * 24.0,  # Run every 24 hours
+#         # 'schedule': crontab(hour=9, minute=0),  # Run daily at 9:00 AM
+#         # Uncomment above and comment the line above to use cron-style scheduling
+#     },
+# }
+# CELERY_BEAT_SCHEDULER = 'django_celery_beat.schedulers:DatabaseScheduler'
