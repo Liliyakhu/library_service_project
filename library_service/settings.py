@@ -13,6 +13,8 @@ https://docs.djangoproject.com/en/5.1/ref/settings/
 import os
 from datetime import timedelta
 from pathlib import Path
+
+import stripe
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -58,7 +60,7 @@ INSTALLED_APPS = [
     "users",
     "borrowings",
     "notifications",
-    "payments"
+    "payments",
 ]
 
 MIDDLEWARE = [
@@ -210,3 +212,19 @@ CELERY_SEND_EVENTS = True
 #     },
 # }
 # CELERY_BEAT_SCHEDULER = 'django_celery_beat.schedulers:DatabaseScheduler'
+
+
+# Stripe settings
+# Your test publishable key
+STRIPE_PUBLISHABLE_KEY = os.getenv("STRIPE_PUBLISHABLE_KEY", "pk_test")
+# Your test secret key
+STRIPE_SECRET_KEY = os.getenv("STRIPE_SECRET_KEY", "sk_test")
+# Webhook endpoint secret
+STRIPE_WEBHOOK_SECRET = os.getenv("STRIPE_WEBHOOK_SECRET", "whsec")
+
+# Configure Stripe
+stripe.api_key = STRIPE_SECRET_KEY
+
+# Payment configuration
+PAYMENT_SUCCESS_URL = os.getenv("PAYMENT_SUCCESS_URL", "http://localhost:8000/api/payments/success/")
+PAYMENT_CANCEL_URL = os.getenv("PAYMENT_CANCEL_URL", "http://localhost:8000/api/payments/cancel/")

@@ -112,7 +112,7 @@ class Borrowing(models.Model):
         super().save(*args, **kwargs)
 
     def __str__(self):
-        return f"{self.user.full_name} borrowed {self.book.title} on {self.borrow_date}"
+        return f"{self.user.full_name} borrowed {self.book.title} on {self.borrow_date}, id = {self.id}"
 
     @property
     def is_returned(self):

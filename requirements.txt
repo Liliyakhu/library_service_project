@@ -41,6 +41,7 @@ redis==3.5.3
 requests==2.32.5
 six==1.17.0
 sqlparse==0.5.3
+stripe==12.5.1
 tomli==2.2.1
 tornado==6.5.2
 types-python-dateutil==2.9.0.20250822
