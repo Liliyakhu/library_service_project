@@ -4,6 +4,7 @@ from django.utils import timezone
 from borrowings.models import Borrowing
 from books.models import Book
 from books.serializers import BookSerializer
+from payments.serializers import PaymentSerializer
 
 
 class BorrowingCreateSerializer(serializers.ModelSerializer):
@@ -66,6 +67,7 @@ class BorrowingDetailSerializer(serializers.ModelSerializer):
     days_overdue = serializers.IntegerField(read_only=True)
     borrowing_days = serializers.IntegerField(read_only=True)
     total_fee = serializers.DecimalField(max_digits=8, decimal_places=2, read_only=True)
+    payments = PaymentSerializer(many=True, read_only=True)
 
     class Meta:
         model = Borrowing
@@ -82,6 +84,7 @@ class BorrowingDetailSerializer(serializers.ModelSerializer):
             "days_overdue",
             "borrowing_days",
             "total_fee",
+            "payments",
         ]
 
 

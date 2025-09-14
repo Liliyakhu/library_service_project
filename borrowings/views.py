@@ -15,6 +15,7 @@ from borrowings.serializers import (
 )
 from users.authentication import AuthorizeHeaderJWTAuthentication
 from borrowings.models import Borrowing
+from payments.services import create_payment_for_borrowing
 
 
 class BorrowingViewSet(viewsets.ModelViewSet):
@@ -58,6 +59,14 @@ class BorrowingViewSet(viewsets.ModelViewSet):
         serializer.is_valid(raise_exception=True)
 
         borrowing = serializer.save()
+
+        # Create payment + stripe session
+        try:
+            payment = create_payment_for_borrowing(borrowing)
+        except Exception as e:
+            # If payment/session creation failed, rollback borrowing too
+            raise ValidationError(f"Payment creation failed: {str(e)}")
+
         response_serializer = BorrowingDetailSerializer(borrowing)
 
         # Build a neat, HTML-safe message
@@ -72,7 +81,9 @@ class BorrowingViewSet(viewsets.ModelViewSet):
             f"🗓️ <b>Due</b>: {b.expected_return_date:%Y-%m-%d}\n"
             f"💸 <b>Daily fee</b>: {book.daily_fee}\n"
             f"📦 <b>Inventory left</b>: {book.inventory}\n"
-            f"🧾 <b>ID</b>: {b.id}"
+            f"🧾 <b>Borrowing ID</b>: {b.id}\n"
+            f"💳 <b>Payment</b>: {payment.money_to_pay} — {payment.get_type_display()}\n"
+            f"🔗 <a href='{payment.session_url}'>Pay now</a>"
         )
         # Fire-and-forget; we don't block user if Telegram fails
         send_telegram_message(msg)

@@ -5,17 +5,17 @@ from payments.webhooks import StripeWebhookView
 
 
 class Command(BaseCommand):
-    help = 'Test webhook processing with sample data'
+    help = "Test webhook processing with sample data"
 
     def add_arguments(self, parser):
         parser.add_argument(
-            '--payment-id',
+            "--payment-id",
             type=int,
-            help='Payment ID to mark as paid via simulated webhook',
+            help="Payment ID to mark as paid via simulated webhook",
         )
 
     def handle(self, *args, **options):
-        payment_id = options.get('payment_id')
+        payment_id = options.get("payment_id")
 
         if payment_id:
             try:
@@ -23,7 +23,7 @@ class Command(BaseCommand):
 
                 if not payment.session_id:
                     self.stdout.write(
-                        self.style.ERROR(f'Payment {payment_id} has no session_id')
+                        self.style.ERROR(f"Payment {payment_id} has no session_id")
                     )
                     return
 
@@ -45,14 +45,14 @@ class Command(BaseCommand):
                 webhook_view.handle_checkout_completed(mock_event)
 
                 self.stdout.write(
-                    self.style.SUCCESS(f'Successfully processed webhook for payment {payment_id}')
+                    self.style.SUCCESS(
+                        f"Successfully processed webhook for payment {payment_id}"
+                    )
                 )
 
             except Payment.DoesNotExist:
-                self.stdout.write(
-                    self.style.ERROR(f'Payment {payment_id} not found')
-                )
+                self.stdout.write(self.style.ERROR(f"Payment {payment_id} not found"))
         else:
             self.stdout.write(
-                self.style.WARNING('Use --payment-id to test specific payment')
+                self.style.WARNING("Use --payment-id to test specific payment")
             )

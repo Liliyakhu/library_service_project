@@ -243,36 +243,38 @@ class PaymentViewSet(viewsets.ModelViewSet):
             }
         )
 
-    @action(detail=False, methods=['get'])
+    @action(detail=False, methods=["get"])
     def webhook_events(self, request):
         """Get recent webhook events for debugging (staff only)"""
         if not request.user.is_staff:
             return Response(
-                {'error': 'Only staff can view webhook events'},
-                status=status.HTTP_403_FORBIDDEN
+                {"error": "Only staff can view webhook events"},
+                status=status.HTTP_403_FORBIDDEN,
             )
 
         events = StripeService.get_webhook_events()
 
-        return Response({
-            'events': [
-                {
-                    'id': event.id,
-                    'type': event.type,
-                    'created': event.created,
-                    'data': event.data
-                }
-                for event in events
-            ]
-        })
+        return Response(
+            {
+                "events": [
+                    {
+                        "id": event.id,
+                        "type": event.type,
+                        "created": event.created,
+                        "data": event.data,
+                    }
+                    for event in events
+                ]
+            }
+        )
 
-    @action(detail=False, methods=['post'])
+    @action(detail=False, methods=["post"])
     def test_webhook(self, request):
         """Test webhook functionality (development only)"""
         if not request.user.is_staff:
             return Response(
-                {'error': 'Only staff can test webhooks'},
-                status=status.HTTP_403_FORBIDDEN
+                {"error": "Only staff can test webhooks"},
+                status=status.HTTP_403_FORBIDDEN,
             )
 
 

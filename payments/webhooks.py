@@ -14,7 +14,7 @@ from payments.models import Payment
 logger = logging.getLogger(__name__)
 
 
-@method_decorator(csrf_exempt, name='dispatch')
+@method_decorator(csrf_exempt, name="dispatch")
 class StripeWebhookView(View):
     """
     Class-based view for handling Stripe webhooks
@@ -23,7 +23,7 @@ class StripeWebhookView(View):
     def post(self, request):
         """Handle Stripe webhook POST requests"""
         payload = request.body
-        sig_header = request.META.get('HTTP_STRIPE_SIGNATURE')
+        sig_header = request.META.get("HTTP_STRIPE_SIGNATURE")
         endpoint_secret = settings.STRIPE_WEBHOOK_SECRET
 
         # Debug logging (remove in production)
@@ -32,9 +32,7 @@ class StripeWebhookView(View):
         logger.info(f"Webhook secret configured: {bool(endpoint_secret)}")
 
         try:
-            event = stripe.Webhook.construct_event(
-                payload, sig_header, endpoint_secret
-            )
+            event = stripe.Webhook.construct_event(payload, sig_header, endpoint_secret)
             logger.info(f"Event verified: {event['type']}")
 
         except ValueError as e:
@@ -45,7 +43,7 @@ class StripeWebhookView(View):
             return HttpResponse(status=400)
 
         # Handle the checkout.session.completed event
-        if event['type'] == 'checkout.session.completed':
+        if event["type"] == "checkout.session.completed":
             return self.handle_checkout_completed(event)
         else:
             logger.info(f"Unhandled event type: {event['type']}")
@@ -54,18 +52,20 @@ class StripeWebhookView(View):
 
     def handle_checkout_completed(self, event):
         """Handle successful checkout completion"""
-        session = event['data']['object']
-        session_id = session['id']
-        payment_status = session.get('payment_status')
+        session = event["data"]["object"]
+        session_id = session["id"]
+        payment_status = session.get("payment_status")
 
         logger.info(f"Processing session {session_id} with status {payment_status}")
 
         try:
             payment = Payment.objects.select_for_update().get(session_id=session_id)
-            logger.info(f"Found payment {payment.id} with current status: {payment.status}")
+            logger.info(
+                f"Found payment {payment.id} with current status: {payment.status}"
+            )
 
-            if payment.status == 'pending' and payment_status == 'paid':
-                payment.status = 'paid'
+            if payment.status == "pending" and payment_status == "paid":
+                payment.status = "paid"
                 payment.save()
                 logger.info(f"Payment {payment.id} marked as paid!")
 
@@ -95,7 +95,7 @@ def stripe_webhook_enhanced(request):
     Enhanced webhook function with detailed logging for debugging
     """
     payload = request.body
-    sig_header = request.META.get('HTTP_STRIPE_SIGNATURE')
+    sig_header = request.META.get("HTTP_STRIPE_SIGNATURE")
     endpoint_secret = settings.STRIPE_WEBHOOK_SECRET
 
     # Debug logging (remove prints in production)
@@ -106,15 +106,13 @@ def stripe_webhook_enhanced(request):
 
     # Create a simple log file (remove in production)
     try:
-        with open('webhook_debug.log', 'a') as f:
+        with open("webhook_debug.log", "a") as f:
             f.write(f"Webhook called at {timezone.now()}\n")
     except Exception:
         pass  # Don't fail if can't write to log
 
     try:
-        event = stripe.Webhook.construct_event(
-            payload, sig_header, endpoint_secret
-        )
+        event = stripe.Webhook.construct_event(payload, sig_header, endpoint_secret)
         print(f"✅ Event verified: {event['type']}")
 
     except ValueError as e:
@@ -125,10 +123,10 @@ def stripe_webhook_enhanced(request):
         return HttpResponse(status=400)
 
     # Handle the checkout.session.completed event
-    if event['type'] == 'checkout.session.completed':
-        session = event['data']['object']
-        session_id = session['id']
-        payment_status = session.get('payment_status')
+    if event["type"] == "checkout.session.completed":
+        session = event["data"]["object"]
+        session_id = session["id"]
+        payment_status = session.get("payment_status")
 
         print(f"Processing session {session_id} with status {payment_status}")
 
@@ -136,12 +134,14 @@ def stripe_webhook_enhanced(request):
             payment = Payment.objects.select_for_update().get(session_id=session_id)
             print(f"Found payment {payment.id} with current status: {payment.status}")
 
-            if payment.status == 'pending' and payment_status == 'paid':
-                payment.status = 'paid'
+            if payment.status == "pending" and payment_status == "paid":
+                payment.status = "paid"
                 payment.save()
                 print(f"✅ Payment {payment.id} marked as paid!")
             else:
-                print(f"⚠️ Payment not updated - Current: {payment.status}, Stripe: {payment_status}")
+                print(
+                    f"⚠️ Payment not updated - Current: {payment.status}, Stripe: {payment_status}"
+                )
 
         except Payment.DoesNotExist:
             print(f"❌ Payment not found for session {session_id}")
@@ -154,23 +154,23 @@ def stripe_webhook_enhanced(request):
 # Webhook event handlers
 def handle_payment_intent_succeeded(event):
     """Handle successful payment intent"""
-    payment_intent = event['data']['object']
+    payment_intent = event["data"]["object"]
     # Add your logic here
     pass
 
 
 def handle_payment_method_attached(event):
     """Handle payment method attachment"""
-    payment_method = event['data']['object']
+    payment_method = event["data"]["object"]
     # Add your logic here
     pass
 
 
 # Event handler mapping
 WEBHOOK_HANDLERS = {
-    'checkout.session.completed': lambda event: None,  # Handled in main function
-    'payment_intent.succeeded': handle_payment_intent_succeeded,
-    'payment_method.attached': handle_payment_method_attached,
+    "checkout.session.completed": lambda event: None,  # Handled in main function
+    "payment_intent.succeeded": handle_payment_intent_succeeded,
+    "payment_method.attached": handle_payment_method_attached,
 }
 
 
@@ -181,18 +181,16 @@ def stripe_webhook_router(request):
     Advanced webhook router that can handle multiple event types
     """
     payload = request.body
-    sig_header = request.META.get('HTTP_STRIPE_SIGNATURE')
+    sig_header = request.META.get("HTTP_STRIPE_SIGNATURE")
     endpoint_secret = settings.STRIPE_WEBHOOK_SECRET
 
     try:
-        event = stripe.Webhook.construct_event(
-            payload, sig_header, endpoint_secret
-        )
+        event = stripe.Webhook.construct_event(payload, sig_header, endpoint_secret)
     except (ValueError, stripe.error.SignatureVerificationError) as e:
         logger.error(f"Webhook signature verification failed: {e}")
         return HttpResponse(status=400)
 
-    event_type = event['type']
+    event_type = event["type"]
     handler = WEBHOOK_HANDLERS.get(event_type)
 
     if handler:

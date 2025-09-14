@@ -1,6 +1,6 @@
 import stripe
 from django.conf import settings
-from decimal import Decimal
+from decimal import Decimal, ROUND_HALF_UP
 import logging
 
 logger = logging.getLogger(__name__)
@@ -20,9 +20,16 @@ class StripeService:
         Returns:
             dict: Contains session_id and session_url, or None if error
         """
+
         try:
-            # Convert amount to cents (Stripe uses cents for USD)
-            amount_cents = int(payment.money_to_pay * 100)
+            # Convert Decimal amount to cents safely
+            amount_decimal = payment.money_to_pay or Decimal("0.00")
+            # multiply by 100 and round to nearest cent then cast to int
+            amount_cents = int(
+                (amount_decimal * Decimal("100")).quantize(
+                    Decimal("1"), rounding=ROUND_HALF_UP
+                )
+            )
 
             # Determine success and cancel URLs
             success_url = (
