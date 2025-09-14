@@ -2,19 +2,20 @@ from payments.models import Payment
 from payments.stripe_service import StripeService
 
 
-def create_payment_for_borrowing(borrowing, payment_type="payment"):
+def create_payment_for_borrowing(borrowing, request=None):
     """
     Create a Payment + Stripe Checkout Session for a borrowing.
     """
     # 1. Create payment (pending)
     payment = Payment.objects.create(
         borrowing=borrowing,
-        type=payment_type,
-        money_to_pay=borrowing.total_fee,  # borrowing must implement total_fee
+        money_to_pay=borrowing.total_fee,
+        type="payment",
+        status="pending",
     )
 
     # 2. Create Stripe session
-    stripe_result = StripeService.create_checkout_session(payment)
+    stripe_result = StripeService.create_checkout_session(payment, request=request)
 
     if stripe_result.get("success"):
         payment.session_id = stripe_result["session_id"]

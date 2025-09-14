@@ -1,45 +1,28 @@
 import stripe
 from django.conf import settings
 from decimal import Decimal, ROUND_HALF_UP
+from django.urls import reverse
 import logging
 
 logger = logging.getLogger(__name__)
 
 
 class StripeService:
-    """Service class to handle Stripe payment operations"""
-
     @staticmethod
-    def create_checkout_session(payment):
-        """
-        Create a Stripe Checkout Session for a payment
-
-        Args:
-            payment: Payment object
-
-        Returns:
-            dict: Contains session_id and session_url, or None if error
-        """
-
+    def create_checkout_session(payment, request):
         try:
-            # Convert Decimal amount to cents safely
-            amount_decimal = payment.money_to_pay or Decimal("0.00")
-            # multiply by 100 and round to nearest cent then cast to int
-            amount_cents = int(
-                (amount_decimal * Decimal("100")).quantize(
-                    Decimal("1"), rounding=ROUND_HALF_UP
-                )
-            )
+            amount_cents = int(payment.money_to_pay * 100)
 
-            # Determine success and cancel URLs
             success_url = (
-                f"{settings.PAYMENT_SUCCESS_URL}?session_id={{CHECKOUT_SESSION_ID}}"
-            )
-            cancel_url = (
-                f"{settings.PAYMENT_CANCEL_URL}?session_id={{CHECKOUT_SESSION_ID}}"
+                request.build_absolute_uri(reverse("payments:payment_success"))
+                + "?session_id={CHECKOUT_SESSION_ID}"
             )
 
-            # Create the checkout session
+            cancel_url = (
+                request.build_absolute_uri(reverse("payments:payment_cancel"))
+                + "?session_id={CHECKOUT_SESSION_ID}"
+            )
+
             session = stripe.checkout.Session.create(
                 payment_method_types=["card"],
                 line_items=[
@@ -47,8 +30,7 @@ class StripeService:
                         "price_data": {
                             "currency": "usd",
                             "product_data": {
-                                "name": f"Library Service - {payment.get_type_display()}",
-                                "description": f"Book: {payment.borrowing.book.title} by {payment.borrowing.book.author}",
+                                "name": f"Borrowing for {payment.borrowing.book.title}",
                             },
                             "unit_amount": amount_cents,
                         },
@@ -58,33 +40,15 @@ class StripeService:
                 mode="payment",
                 success_url=success_url,
                 cancel_url=cancel_url,
-                client_reference_id=str(payment.id),
-                metadata={
-                    "payment_id": payment.id,
-                    "borrowing_id": payment.borrowing.id,
-                    "user_email": payment.borrowing.user.email,
-                    "payment_type": payment.type,
-                },
-                # Expire session in 1 hour
-                expires_at=int((payment.created_at.timestamp() + 3600)),
             )
 
             return {
+                "success": True,
                 "session_id": session.id,
                 "session_url": session.url,
-                "success": True,
             }
-
-        except stripe.error.StripeError as e:
-            logger.error(
-                f"Stripe error creating checkout session for payment {payment.id}: {e}"
-            )
-            return {"error": str(e), "success": False}
         except Exception as e:
-            logger.error(
-                f"Unexpected error creating checkout session for payment {payment.id}: {e}"
-            )
-            return {"error": "Failed to create payment session", "success": False}
+            return {"success": False, "error": str(e)}
 
     @staticmethod
     def retrieve_checkout_session(session_id):

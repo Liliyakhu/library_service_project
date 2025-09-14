@@ -226,5 +226,9 @@ STRIPE_WEBHOOK_SECRET = os.getenv("STRIPE_WEBHOOK_SECRET", "whsec")
 stripe.api_key = STRIPE_SECRET_KEY
 
 # Payment configuration
-PAYMENT_SUCCESS_URL = os.getenv("PAYMENT_SUCCESS_URL", "http://localhost:8000/api/payments/success/")
-PAYMENT_CANCEL_URL = os.getenv("PAYMENT_CANCEL_URL", "http://localhost:8000/api/payments/cancel/")
+PAYMENT_SUCCESS_URL = os.getenv(
+    "PAYMENT_SUCCESS_URL", "http://localhost:8000/api/payments/success/"
+)
+PAYMENT_CANCEL_URL = os.getenv(
+    "PAYMENT_CANCEL_URL", "http://localhost:8000/api/payments/cancel/"
+)

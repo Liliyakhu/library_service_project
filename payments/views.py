@@ -1,4 +1,3 @@
-import json
 import stripe
 import logging
 
@@ -7,6 +6,8 @@ from django.utils import timezone
 from rest_framework import viewsets, status, permissions
 from rest_framework.decorators import action
 from rest_framework.response import Response
+from django.urls import reverse
+from rest_framework.decorators import api_view
 from django.db import transaction
 from django.shortcuts import get_object_or_404
 from django.http import JsonResponse, HttpResponse
@@ -72,7 +73,7 @@ class PaymentViewSet(viewsets.ModelViewSet):
         payment = serializer.save()
 
         # Create Stripe checkout session
-        stripe_result = StripeService.create_checkout_session(payment)
+        stripe_result = StripeService.create_checkout_session(payment, request)
 
         if stripe_result["success"]:
             # Update payment with Stripe session info
@@ -278,53 +279,98 @@ class PaymentViewSet(viewsets.ModelViewSet):
             )
 
 
-# Utility views for handling payment success/cancel
+@api_view(["GET"])
 def payment_success(request):
-    """Handle successful payment redirect"""
-    session_id = request.GET.get("session_id")
+    """Confirm that the Stripe session was paid and update Payment status"""
+    session_id = request.query_params.get("session_id")
+    if not session_id:
+        return Response(
+            {
+                "error": "Missing session_id",
+                "message": "Payment verification failed. Please contact support.",
+            },
+            status=status.HTTP_400_BAD_REQUEST,
+        )
 
-    if session_id:
-        try:
-            payment = Payment.objects.get(session_id=session_id)
-
-            # Verify with Stripe and update status
-            if StripeService.is_session_paid(session_id):
-                payment.status = "paid"
-                payment.save()
-
-                return JsonResponse(
-                    {
-                        "status": "success",
-                        "message": "Payment completed successfully!",
-                        "payment_id": payment.id,
-                    }
-                )
-            else:
-                return JsonResponse(
-                    {
-                        "status": "pending",
-                        "message": "Payment is still processing...",
-                        "payment_id": payment.id,
-                    }
-                )
-        except Payment.DoesNotExist:
-            return JsonResponse(
-                {"status": "error", "message": "Payment not found"}, status=404
+    try:
+        session = StripeService.retrieve_checkout_session(session_id)
+        if not session:
+            return Response(
+                {
+                    "error": "Could not retrieve session",
+                    "message": "Payment session not found. Please contact support.",
+                },
+                status=status.HTTP_400_BAD_REQUEST,
             )
 
-    return JsonResponse(
-        {"status": "error", "message": "No session ID provided"}, status=400
-    )
+        if session.payment_status == "paid":
+            try:
+                payment = get_object_or_404(Payment, session_id=session_id)
+                if payment.status != "paid":
+                    payment.status = "paid"
+                    payment.save()
+
+                return Response(
+                    {
+                        "message": "Payment successful! Your borrowing has been confirmed.",
+                        "payment_id": payment.id,
+                        "status": "paid",
+                    }
+                )
+            except Payment.DoesNotExist:
+                return Response(
+                    {
+                        "error": "Payment record not found",
+                        "message": "Payment was processed but record not found. Please contact support.",
+                    },
+                    status=status.HTTP_404_NOT_FOUND,
+                )
+        else:
+            return Response(
+                {
+                    "message": "Payment not completed yet. Please try again or contact support.",
+                    "session_status": session.payment_status,
+                },
+                status=status.HTTP_202_ACCEPTED,
+            )
+
+    except Exception as e:
+        logger.error(f"Error processing payment success for session {session_id}: {e}")
+        return Response(
+            {
+                "error": "Payment verification failed",
+                "message": "An error occurred while verifying your payment. Please contact support.",
+            },
+            status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        )
 
 
+@api_view(["GET"])
 def payment_cancel(request):
-    """Handle cancelled payment redirect"""
-    session_id = request.GET.get("session_id")
+    """Communicate to the user that payment can be made later (session valid for 24h)"""
+    session_id = request.query_params.get("session_id")
 
-    return JsonResponse(
-        {
-            "status": "cancelled",
-            "message": "Payment was cancelled",
-            "session_id": session_id,
-        }
-    )
+    response_data = {
+        "message": "Payment was canceled. You can complete your payment later using the same checkout session.",
+        "note": "Your checkout session will remain valid for 24 hours.",
+        "action": "You can return to complete the payment anytime within this period.",
+    }
+
+    # Optionally include session info if provided
+    if session_id:
+        try:
+            payment = Payment.objects.filter(session_id=session_id).first()
+            if payment:
+                response_data.update(
+                    {
+                        "payment_id": payment.id,
+                        "session_url": payment.session_url,
+                        "amount": str(payment.money_to_pay),
+                    }
+                )
+        except Exception as e:
+            logger.error(
+                f"Error retrieving payment info for canceled session {session_id}: {e}"
+            )
+
+    return Response(response_data)

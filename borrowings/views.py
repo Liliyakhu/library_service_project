@@ -62,7 +62,7 @@ class BorrowingViewSet(viewsets.ModelViewSet):
 
         # Create payment + stripe session
         try:
-            payment = create_payment_for_borrowing(borrowing)
+            payment = create_payment_for_borrowing(borrowing, request=request)
         except Exception as e:
             # If payment/session creation failed, rollback borrowing too
             raise ValidationError(f"Payment creation failed: {str(e)}")
