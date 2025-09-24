@@ -15,7 +15,10 @@ from borrowings.serializers import (
 )
 from users.authentication import AuthorizeHeaderJWTAuthentication
 from borrowings.models import Borrowing
-from payments.services import create_payment_for_borrowing
+from payments.services import (
+    create_payment_for_borrowing,
+    create_fine_payment_for_borrowing,
+)
 
 
 class BorrowingViewSet(viewsets.ModelViewSet):
@@ -107,11 +110,67 @@ class BorrowingViewSet(viewsets.ModelViewSet):
     def return_book(self, request, pk=None):
         borrowing = self.get_object()
 
+        # Check if borrowing is already returned
+        if borrowing.actual_return_date:
+            return Response(
+                {"error": "This borrowing has already been returned."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
         try:
+            # Set return date (this will trigger is_overdue calculation)
             borrowing.return_book()
+
+            # Check if fine payment is needed
+            fine_payment = None
+            if borrowing.was_returned_late:
+                try:
+                    fine_payment = create_fine_payment_for_borrowing(
+                        borrowing, request=request
+                    )
+
+                    # Send Telegram notification for fine
+                    book = borrowing.book
+                    user = borrowing.user
+                    days_overdue = borrowing.days_overdue
+                    fine_amount = fine_payment.money_to_pay
+
+                    msg = (
+                        "<b>💸 Fine Payment Required</b>\n"
+                        f"👤 <b>User</b>: {escape(user.full_name)} ({escape(user.email)})\n"
+                        f"📖 <b>Book</b>: {escape(book.title)} — {escape(book.author)}\n"
+                        f"📅 <b>Returned</b>: {borrowing.actual_return_date:%Y-%m-%d}\n"
+                        f"🗓️ <b>Was due</b>: {borrowing.expected_return_date:%Y-%m-%d}\n"
+                        f"⏰ <b>Days overdue</b>: {days_overdue}\n"
+                        f"💰 <b>Fine amount</b>: ${fine_amount}\n"
+                        f"🧾 <b>Borrowing ID</b>: {borrowing.id}\n"
+                        f"🔗 <a href='{fine_payment.session_url}'>Pay Fine</a>"
+                    )
+                    send_telegram_message(msg)
+
+                except Exception as e:
+                    # Log error but don't fail the return process
+                    import logging
+
+                    logger = logging.getLogger(__name__)
+                    logger.error(
+                        f"Failed to create fine payment for borrowing {borrowing.id}: {e}"
+                    )
+
         except ValidationError as e:
             return Response({"error": e.message}, status=status.HTTP_400_BAD_REQUEST)
 
-        return Response(
-            BorrowingDetailSerializer(borrowing).data, status=status.HTTP_200_OK
-        )
+        # Prepare response data
+        response_data = BorrowingDetailSerializer(borrowing).data
+
+        # Add fine payment info if applicable
+        # if fine_payment:
+        #     response_data["fine_payment"] = {
+        #         "id": fine_payment.id,
+        #         "amount": str(fine_payment.money_to_pay),
+        #         "session_url": fine_payment.session_url,
+        #         "status": fine_payment.status,
+        #         "message": "Fine payment required for overdue return",
+        #     }
+
+        return Response(response_data, status=status.HTTP_200_OK)

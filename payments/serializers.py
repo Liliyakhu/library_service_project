@@ -109,5 +109,11 @@ class PaymentDetailSerializer(serializers.ModelSerializer):
             "actual_return_date": borrowing.actual_return_date,
             "is_overdue": borrowing.is_overdue,
             "days_overdue": borrowing.days_overdue,
-            "total_fee": borrowing.total_fee,
+            "payment_fee": borrowing.payment_fee,
+            "fine_fee": borrowing.fine_fee,
+            "total_amount_due": borrowing.total_amount_due,
+
         }
+
+
+

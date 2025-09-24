@@ -11,6 +11,9 @@ https://docs.djangoproject.com/en/5.1/ref/settings/
 """
 
 import os
+import pytz
+
+from django.utils import timezone
 from datetime import timedelta
 from pathlib import Path
 
@@ -131,6 +134,8 @@ AUTH_PASSWORD_VALIDATORS = [
 LANGUAGE_CODE = "en-us"
 
 TIME_ZONE = "Europe/Kyiv"
+KYIV_TZ = pytz.timezone("Europe/Kyiv")
+KYIV_TIME = timezone.now().astimezone(KYIV_TZ)
 
 USE_I18N = True
 
@@ -232,3 +237,5 @@ PAYMENT_SUCCESS_URL = os.getenv(
 PAYMENT_CANCEL_URL = os.getenv(
     "PAYMENT_CANCEL_URL", "http://localhost:8000/api/payments/cancel/"
 )
+
+FINE_MULTIPLIER = float(os.getenv("FINE_MULTIPLIER", "2.0"))

@@ -23,6 +23,18 @@ class StripeService:
                 + "?session_id={CHECKOUT_SESSION_ID}"
             )
 
+            # Customize product name based on payment type
+            if payment.type == "fine":
+                product_name = (
+                    f"Fine for overdue return: {payment.borrowing.book.title}"
+                )
+                description = (
+                    f"Fine payment for {payment.borrowing.days_overdue} days overdue"
+                )
+            else:
+                product_name = f"Borrowing for {payment.borrowing.book.title}"
+                description = f"Payment for borrowing book"
+
             session = stripe.checkout.Session.create(
                 payment_method_types=["card"],
                 line_items=[
@@ -30,7 +42,8 @@ class StripeService:
                         "price_data": {
                             "currency": "usd",
                             "product_data": {
-                                "name": f"Borrowing for {payment.borrowing.book.title}",
+                                "name": product_name,
+                                "description": description,
                             },
                             "unit_amount": amount_cents,
                         },
@@ -40,6 +53,11 @@ class StripeService:
                 mode="payment",
                 success_url=success_url,
                 cancel_url=cancel_url,
+                metadata={
+                    "payment_id": payment.id,
+                    "payment_type": payment.type,
+                    "borrowing_id": payment.borrowing.id,
+                },
             )
 
             return {

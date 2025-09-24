@@ -1,15 +1,13 @@
+from django.conf import settings
 from rest_framework import serializers
-from django.utils import timezone
 
 from borrowings.models import Borrowing
-from books.models import Book
+from payments.models import Payment
 from books.serializers import BookSerializer
 from payments.serializers import PaymentSerializer
 
 
 class BorrowingCreateSerializer(serializers.ModelSerializer):
-    """Serializer for creating new borrowings"""
-
     class Meta:
         model = Borrowing
         fields = [
@@ -27,7 +25,7 @@ class BorrowingCreateSerializer(serializers.ModelSerializer):
 
     def validate_expected_return_date(self, value):
         """Validate expected return date"""
-        today = timezone.now().date()
+        today = settings.KYIV_TIME.date()
 
         if value <= today:
             raise serializers.ValidationError(
@@ -45,13 +43,8 @@ class BorrowingCreateSerializer(serializers.ModelSerializer):
 
     def create(self, validated_data):
         """Create a new borrowing with current user attached"""
-        # Get the current user from the request context
         user = self.context["request"].user
-
-        # Create the borrowing with the current user
-        borrowing = Borrowing.objects.create(user=user, **validated_data)
-
-        return borrowing
+        return Borrowing.objects.create(user=user, **validated_data)
 
 
 class BorrowingDetailSerializer(serializers.ModelSerializer):
@@ -59,14 +52,18 @@ class BorrowingDetailSerializer(serializers.ModelSerializer):
 
     book = BookSerializer(read_only=True)
     user_email = serializers.CharField(source="user.email", read_only=True)
-    user_full_name = serializers.CharField(source="user.full_name", read_only=True)
+    # user_full_name = serializers.CharField(source="user.full_name", read_only=True)
 
     # Calculated fields
     is_returned = serializers.BooleanField(read_only=True)
     is_overdue = serializers.BooleanField(read_only=True)
     days_overdue = serializers.IntegerField(read_only=True)
     borrowing_days = serializers.IntegerField(read_only=True)
-    total_fee = serializers.DecimalField(max_digits=8, decimal_places=2, read_only=True)
+    payment_fee = serializers.DecimalField(max_digits=8, decimal_places=2, read_only=True)
+    fine_fee = serializers.DecimalField(max_digits=8, decimal_places=2, read_only=True)
+    total_amount_due = serializers.DecimalField(max_digits=8, decimal_places=2, read_only=True)
+    was_returned_late = serializers.BooleanField(read_only=True)
+    needs_fine_payment = serializers.BooleanField(read_only=True)
     payments = PaymentSerializer(many=True, read_only=True)
 
     class Meta:
@@ -78,14 +75,31 @@ class BorrowingDetailSerializer(serializers.ModelSerializer):
             "actual_return_date",
             "book",
             "user_email",
-            "user_full_name",
             "is_returned",
             "is_overdue",
             "days_overdue",
             "borrowing_days",
-            "total_fee",
+            "payment_fee",
+            "fine_fee",
+            "total_amount_due",
+            "was_returned_late",
+            "needs_fine_payment",
             "payments",
         ]
+
+    # def get_fine_payment(self, obj):
+    #     """Get fine payment for this borrowing if it exists"""
+    #     fine_payment = Payment.objects.filter(borrowing=obj, type="FINE").first()
+    #
+    #     if fine_payment:
+    #         return {
+    #             "id": fine_payment.id,
+    #             "amount": str(fine_payment.money_to_pay),
+    #             "status": fine_payment.status,
+    #             "session_url": fine_payment.session_url,
+    #             "session_id": fine_payment.session_id,
+    #         }
+    #     return None
 
 
 class BorrowingListSerializer(serializers.ModelSerializer):

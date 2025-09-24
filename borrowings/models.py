@@ -8,8 +8,12 @@ from datetime import datetime
 from books.models import Book
 
 
+def kyiv_today():
+    return settings.KYIV_TIME.date()
+
+
 class Borrowing(models.Model):
-    borrow_date = models.DateField(default=timezone.now)
+    borrow_date = models.DateField(default=kyiv_today)
     expected_return_date = models.DateField()
     actual_return_date = models.DateField(null=True, blank=True)
     book = models.ForeignKey(Book, on_delete=models.CASCADE, related_name="borrowings")
@@ -56,7 +60,7 @@ class Borrowing(models.Model):
             self.actual_return_date = self.actual_return_date.date()
 
         # Validate borrow_date is not in the future
-        if self.borrow_date and self.borrow_date > timezone.now().date():
+        if self.borrow_date and self.borrow_date > settings.KYIV_TIME.date():
             raise ValidationError(
                 {"borrow_date": "Borrow date cannot be in the future."}
             )
@@ -121,53 +125,114 @@ class Borrowing(models.Model):
 
     @property
     def is_overdue(self):
-        """Check if borrowing is overdue (only when no actual_return_date)."""
+        """Check if borrowing is currently overdue (active borrowings only)."""
         if self.actual_return_date:
-            return False
+            return self.was_returned_late
         expected = (
             self.expected_return_date.date()
             if isinstance(self.expected_return_date, datetime)
             else self.expected_return_date
         )
-        return timezone.now().date() > expected
+        return settings.KYIV_TIME.date() > expected
 
     @property
-    def days_overdue(self):
-        """Return positive overdue days, or 0 if not overdue."""
-        if not self.is_overdue:
-            return 0
+    def was_returned_late(self):
+        """Check if book was returned after the expected date."""
+        if not self.actual_return_date:
+            return False
+
         expected = (
             self.expected_return_date.date()
             if isinstance(self.expected_return_date, datetime)
             else self.expected_return_date
         )
-        return max((timezone.now().date() - expected).days, 0)
+        actual = (
+            self.actual_return_date.date()
+            if isinstance(self.actual_return_date, datetime)
+            else self.actual_return_date
+        )
+        return actual > expected
+
+    @property
+    def needs_fine_payment(self):
+        """Check if this borrowing needs a fine payment."""
+        return self.was_returned_late and not self.payments.filter(type="FINE").exists()
 
     @property
     def borrowing_days(self):
-        """Calculate total borrowing days"""
-        end_date = self.actual_return_date or timezone.now().date()
-        return (
-            end_date - self.borrow_date
-        ).days + 1  # +1 to include both start and end days
+        """Planned borrowing duration (without overdue days)."""
+        return (self.expected_return_date - self.borrow_date).days
 
     @property
-    def total_fee(self):
-        """Calculate total borrowing fee"""
-        return self.book.daily_fee * self.borrowing_days
+    def payment_fee(self):
+        """Base borrowing fee (without fine)."""
+        return (self.book.daily_fee * self.borrowing_days).quantize(Decimal("0.01"))
+
+    @property
+    def fine_fee(self):
+        """Calculate fine amount for late return."""
+        if not self.was_returned_late:
+            return Decimal("0.00")
+
+        fine_multiplier = Decimal(str(getattr(settings, "FINE_MULTIPLIER", 2.0)))
+        expected = (
+            self.expected_return_date.date()
+            if isinstance(self.expected_return_date, datetime)
+            else self.expected_return_date
+        )
+        actual = (
+            self.actual_return_date.date()
+            if isinstance(self.actual_return_date, datetime)
+            else self.actual_return_date
+        )
+
+        days_late = (actual - expected).days
+        if days_late <= 0:
+            return Decimal("0.00")
+
+        daily_fee = self.book.daily_fee
+        fine_amount = days_late * daily_fee * fine_multiplier
+        return fine_amount.quantize(Decimal("0.01"))
+
+    @property
+    def total_amount_due(self):
+        """Total amount including normal fee and fine if overdue."""
+        return (self.payment_fee + self.fine_fee).quantize(Decimal("0.01"))
+
+    @property
+    def days_overdue(self):
+        """Number of days overdue (0 if returned on time or not overdue)."""
+        expected = (
+            self.expected_return_date.date()
+            if isinstance(self.expected_return_date, datetime)
+            else self.expected_return_date
+        )
+
+        if self.actual_return_date:
+            actual = (
+                self.actual_return_date.date()
+                if isinstance(self.actual_return_date, datetime)
+                else self.actual_return_date
+            )
+            return max((actual - expected).days, 0)
+
+        # Not returned yet → calculate relative to today
+        if settings.KYIV_TIME.date() > expected:
+            return (settings.KYIV_TIME.date() - expected).days
+        return 0
 
     def return_book(self, return_date=None):
         """Mark the book as returned with validation"""
         if self.actual_return_date:
             raise ValidationError("Book has already been returned.")
 
-        return_date = return_date or timezone.now().date()
+        return_date = return_date or settings.KYIV_TIME.date()
 
         # Validate return date
         if return_date < self.borrow_date:
             raise ValidationError("Return date cannot be before borrow date.")
 
-        if return_date > timezone.now().date():
+        if return_date > settings.KYIV_TIME.date():
             raise ValidationError("Return date cannot be in the future.")
 
         self.actual_return_date = return_date

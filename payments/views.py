@@ -21,6 +21,7 @@ from payments.serializers import (
     PaymentDetailSerializer,
 )
 from payments.permissions import IsOwnerOrStaffForPayments
+from payments.services import get_or_create_fine_payment
 from payments.stripe_service import StripeService
 from users.authentication import AuthorizeHeaderJWTAuthentication
 
@@ -276,6 +277,60 @@ class PaymentViewSet(viewsets.ModelViewSet):
             return Response(
                 {"error": "Only staff can test webhooks"},
                 status=status.HTTP_403_FORBIDDEN,
+            )
+
+    @action(detail=False, methods=["get"])
+    def my_fines(self, request):
+        """Get current user's fine payments"""
+        fine_payments = (
+            Payment.objects.select_related("borrowing__book", "borrowing__user")
+            .filter(borrowing__user=request.user, type="fine")
+            .order_by("-created_at")
+        )
+
+        serializer = PaymentSerializer(fine_payments, many=True)
+        return Response(serializer.data)
+
+    @action(detail=False, methods=["post"])
+    def create_fine_for_borrowing(self, request):
+        """Create fine payment for a specific borrowing (staff only)"""
+        if not request.user.is_staff:
+            return Response(
+                {"error": "Only staff can create fine payments"},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        borrowing_id = request.data.get("borrowing_id")
+        if not borrowing_id:
+            return Response(
+                {"error": "borrowing_id is required"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            from borrowings.models import Borrowing
+
+            borrowing = Borrowing.objects.get(id=borrowing_id)
+
+            if not borrowing.is_overdue:
+                return Response(
+                    {"error": "Borrowing is not overdue"},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+            fine_payment = get_or_create_fine_payment(borrowing, request=request)
+            serializer = PaymentDetailSerializer(fine_payment)
+            return Response(serializer.data, status=status.HTTP_201_CREATED)
+
+        except Borrowing.DoesNotExist:
+            return Response(
+                {"error": "Borrowing not found"},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+        except Exception as e:
+            return Response(
+                {"error": f"Failed to create fine payment: {str(e)}"},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
             )
 
 
