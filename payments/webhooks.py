@@ -1,6 +1,9 @@
 import json
+
+import pytz
 import stripe
 import logging
+
 from django.conf import settings
 from django.http import HttpResponse
 from django.views.decorators.http import require_POST
@@ -11,7 +14,11 @@ from django.utils.decorators import method_decorator
 
 from payments.models import Payment
 
+
 logger = logging.getLogger(__name__)
+
+
+KYIV_TZ = pytz.timezone("Europe/Kyiv")
 
 
 @method_decorator(csrf_exempt, name="dispatch")
@@ -107,7 +114,7 @@ def stripe_webhook_enhanced(request):
     # Create a simple log file (remove in production)
     try:
         with open("webhook_debug.log", "a") as f:
-            f.write(f"Webhook called at {timezone.now()}\n")
+            f.write(f"Webhook called at {timezone.now().astimezone(KYIV_TZ)}\n")
     except Exception:
         pass  # Don't fail if can't write to log
 

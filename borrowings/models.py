@@ -1,3 +1,5 @@
+import pytz
+
 from django.db import models
 from django.conf import settings
 from django.utils import timezone
@@ -9,7 +11,10 @@ from books.models import Book
 
 
 def kyiv_today():
-    return settings.KYIV_TIME.date()
+    return timezone.now().astimezone(KYIV_TZ).date()
+
+
+KYIV_TZ = pytz.timezone("Europe/Kyiv")
 
 
 class Borrowing(models.Model):
@@ -60,7 +65,10 @@ class Borrowing(models.Model):
             self.actual_return_date = self.actual_return_date.date()
 
         # Validate borrow_date is not in the future
-        if self.borrow_date and self.borrow_date > settings.KYIV_TIME.date():
+        if (
+            self.borrow_date
+            and self.borrow_date > timezone.now().astimezone(KYIV_TZ).date()
+        ):
             raise ValidationError(
                 {"borrow_date": "Borrow date cannot be in the future."}
             )
@@ -133,7 +141,7 @@ class Borrowing(models.Model):
             if isinstance(self.expected_return_date, datetime)
             else self.expected_return_date
         )
-        return settings.KYIV_TIME.date() > expected
+        return timezone.now().astimezone(KYIV_TZ).date() > expected
 
     @property
     def was_returned_late(self):
@@ -217,8 +225,8 @@ class Borrowing(models.Model):
             return max((actual - expected).days, 0)
 
         # Not returned yet → calculate relative to today
-        if settings.KYIV_TIME.date() > expected:
-            return (settings.KYIV_TIME.date() - expected).days
+        if timezone.now().astimezone(KYIV_TZ).date() > expected:
+            return (timezone.now().astimezone(KYIV_TZ).date() - expected).days
         return 0
 
     def return_book(self, return_date=None):
@@ -226,13 +234,13 @@ class Borrowing(models.Model):
         if self.actual_return_date:
             raise ValidationError("Book has already been returned.")
 
-        return_date = return_date or settings.KYIV_TIME.date()
+        return_date = return_date or timezone.now().astimezone(KYIV_TZ).date()
 
         # Validate return date
         if return_date < self.borrow_date:
             raise ValidationError("Return date cannot be before borrow date.")
 
-        if return_date > settings.KYIV_TIME.date():
+        if return_date > timezone.now().astimezone(KYIV_TZ).date():
             raise ValidationError("Return date cannot be in the future.")
 
         self.actual_return_date = return_date

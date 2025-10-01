@@ -1,14 +1,21 @@
+import pytz
+
 from decimal import Decimal
 from django.db import models
 from django.core.exceptions import ValidationError
+from django.utils import timezone
 
 from borrowings.models import Borrowing
+
+
+KYIV_TZ = pytz.timezone("Europe/Kyiv")
 
 
 class Payment(models.Model):
     STATUS_CHOICES = [
         ("pending", "Pending"),
         ("paid", "Paid"),
+        ("expired", "Expired"),
     ]
 
     TYPE_CHOICES = [
@@ -35,6 +42,8 @@ class Payment(models.Model):
         max_digits=7, decimal_places=2, default=Decimal("0.00")
     )
     created_at = models.DateTimeField(auto_now_add=True)
+
+    session_expires_at = models.DateTimeField(blank=True, null=True)
 
     class Meta:
         ordering = ["-created_at"]
@@ -67,9 +76,15 @@ class Payment(models.Model):
 
     def save(self, *args, **kwargs):
         """Override save to set money_to_pay and validate"""
-        # Set money_to_pay from borrowing total_fee if not set
+        # Set money_to_pay from borrowing total_amount_due if not set
         if not self.money_to_pay:
-            self.money_to_pay = self.borrowing.total_fee
+            self.money_to_pay = self.borrowing.total_amount_due
+
+        # Set session expiration time when session is created (Stripe sessions expire in 24 hours)
+        if self.session_id and not self.session_expires_at:
+            self.session_expires_at = timezone.now().astimezone(
+                KYIV_TZ
+            ) + timezone.timedelta(hours=24)
 
         # Run validation
         self.clean()
@@ -85,6 +100,23 @@ class Payment(models.Model):
         return self.status == "paid"
 
     @property
+    def is_expired(self):
+        """Check if payment session is expired"""
+        if self.status == "expired":
+            return True
+        if (
+            self.session_expires_at
+            and timezone.now().astimezone(KYIV_TZ) > self.session_expires_at
+        ):
+            return True
+        return False
+
+    @property
+    def is_renewable(self):
+        """Check if payment can be renewed (expired or pending with expired session)"""
+        return self.status in ["expired", "pending"] and not self.is_paid
+
+    @property
     def borrower_email(self):
         """Get borrower's email for convenience"""
         return self.borrowing.user.email
@@ -93,3 +125,19 @@ class Payment(models.Model):
     def book_title(self):
         """Get book title for convenience"""
         return self.borrowing.book.title
+
+    def expire_session(self):
+        """Mark payment session as expired"""
+        if self.status == "pending":
+            self.status = "expired"
+            self.save()
+
+    def renew_session(self, new_session_id, new_session_url):
+        """Renew payment session with new Stripe session data"""
+        self.session_id = new_session_id
+        self.session_url = new_session_url
+        self.session_expires_at = timezone.now().astimezone(
+            KYIV_TZ
+        ) + timezone.timedelta(hours=24)
+        self.status = "pending"
+        self.save()

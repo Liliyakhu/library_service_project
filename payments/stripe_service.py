@@ -1,10 +1,15 @@
-import stripe
-from django.conf import settings
-from decimal import Decimal, ROUND_HALF_UP
-from django.urls import reverse
+import pytz
 import logging
+import stripe
+
+from django.urls import reverse
+from django.utils import timezone
+
 
 logger = logging.getLogger(__name__)
+
+
+KYIV_TZ = pytz.timezone("Europe/Kyiv")
 
 
 class StripeService:
@@ -58,6 +63,12 @@ class StripeService:
                     "payment_type": payment.type,
                     "borrowing_id": payment.borrowing.id,
                 },
+                expires_at=int(
+                    (
+                        timezone.now().astimezone(KYIV_TZ)
+                        + timezone.timedelta(hours=24)
+                    ).timestamp()
+                ),  # Explicit expiration
             )
 
             return {
@@ -66,6 +77,53 @@ class StripeService:
                 "session_url": session.url,
             }
         except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    def renew_checkout_session(payment, request):
+        """
+        Create a new checkout session for an expired/renewable payment.
+
+        Args:
+            payment: Payment object to renew
+            request: HTTP request object
+
+        Returns:
+            dict: Result with new session data or error
+        """
+        try:
+            # Verify payment can be renewed
+            if not payment.is_renewable:
+                return {
+                    "success": False,
+                    "error": "Payment cannot be renewed (must be expired or pending)",
+                }
+
+            # Create new session with same details
+            stripe_result = StripeService.create_checkout_session(payment, request)
+
+            if stripe_result["success"]:
+                # Update payment with new session data
+                payment.renew_session(
+                    stripe_result["session_id"], stripe_result["session_url"]
+                )
+
+                logger.info(
+                    f"Successfully renewed session for payment {payment.id}. "
+                    f"New session: {stripe_result['session_id']}"
+                )
+
+                return {
+                    "success": True,
+                    "session_id": stripe_result["session_id"],
+                    "session_url": stripe_result["session_url"],
+                    "payment_id": payment.id,
+                    "message": "Payment session renewed successfully",
+                }
+            else:
+                return stripe_result
+
+        except Exception as e:
+            logger.error(f"Error renewing session for payment {payment.id}: {e}")
             return {"success": False, "error": str(e)}
 
     @staticmethod
@@ -104,6 +162,47 @@ class StripeService:
         if session:
             return session.payment_status == "paid"
         return False
+
+    @staticmethod
+    def is_session_expired(session_id):
+        """
+        Check if a Stripe session is expired
+
+        Args:
+            session_id: Stripe session ID
+
+        Returns:
+            bool: True if expired, False otherwise, None if error
+        """
+        session = StripeService.retrieve_checkout_session(session_id)
+        if session:
+            return session.status == "expired"
+        return None
+
+    @staticmethod
+    def get_session_status(session_id):
+        """
+        Get detailed status information for a Stripe session
+
+        Args:
+            session_id: Stripe session ID
+
+        Returns:
+            dict: Session status details or None if error
+        """
+        session = StripeService.retrieve_checkout_session(session_id)
+        if session:
+            return {
+                "id": session.id,
+                "status": session.status,
+                "payment_status": session.payment_status,
+                "expires_at": session.expires_at,
+                "created": session.created,
+                "url": session.url,
+                "amount_total": session.amount_total,
+                "currency": session.currency,
+            }
+        return None
 
     @staticmethod
     def create_test_sessions():
@@ -145,6 +244,12 @@ class StripeService:
                         "test_payment": True,
                         "amount": str(amount),
                     },
+                    expires_at=int(
+                        (
+                            timezone.now().astimezone(KYIV_TZ)
+                            + timezone.timedelta(hours=24)
+                        ).timestamp()
+                    ),
                 )
 
                 test_sessions.append(
@@ -196,3 +301,32 @@ class StripeService:
         except stripe.error.StripeError as e:
             logger.error(f"Error retrieving webhook events: {e}")
             return []
+
+    @staticmethod
+    def expire_session(session_id):
+        """
+        Manually expire a Stripe session (for testing)
+
+        Args:
+            session_id: Stripe session ID
+
+        Returns:
+            dict: Result of expiration attempt
+        """
+        try:
+            # Note: Stripe doesn't allow manually expiring sessions via API
+            # This is mainly for documentation/testing purposes
+            session = StripeService.retrieve_checkout_session(session_id)
+
+            if not session:
+                return {"success": False, "error": "Session not found"}
+
+            if session.status == "expired":
+                return {"success": True, "message": "Session already expired"}
+
+            return {
+                "success": False,
+                "error": "Cannot manually expire Stripe sessions. They expire automatically after 24 hours.",
+            }
+        except Exception as e:
+            return {"success": False, "error": str(e)}

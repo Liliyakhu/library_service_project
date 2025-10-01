@@ -27,27 +27,27 @@ class BorrowingViewSet(viewsets.ModelViewSet):
 
     def get_queryset(self):
         """Optimized queryset with proper joins"""
-        qs = Borrowing.objects.select_related("book", "user")
+        queryset = Borrowing.objects.select_related("book", "user")
 
         # User filtering
         if not self.request.user.is_staff:
-            qs = qs.filter(user=self.request.user)
+            queryset = queryset.filter(user=self.request.user)
         else:
             user_id = self.request.query_params.get("user_id")
             if user_id:
                 try:
-                    qs = qs.filter(user_id=int(user_id))
+                    queryset = queryset.filter(user_id=int(user_id))
                 except (ValueError, TypeError):
-                    qs = qs.none()
+                    queryset = queryset.none()
 
         # Active/inactive filtering
         is_active = self.request.query_params.get("is_active")
         if is_active == "true":
-            qs = qs.filter(actual_return_date__isnull=True)
+            queryset = queryset.filter(actual_return_date__isnull=True)
         elif is_active == "false":
-            qs = qs.filter(actual_return_date__isnull=False)
+            queryset = queryset.filter(actual_return_date__isnull=False)
 
-        return qs.order_by("-id")
+        return queryset.order_by("-id")
 
     def get_serializer_class(self):
         if self.action == "create":

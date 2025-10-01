@@ -1,12 +1,17 @@
+import pytz
+import logging
+
 from celery import shared_task
 from django.utils import timezone
 from django.utils.html import escape
 from borrowings.models import Borrowing
 from notifications.telegram import send_telegram_message
-import logging
-import pytz
+
 
 logger = logging.getLogger(__name__)
+
+
+KYIV_TZ = pytz.timezone("Europe/Kyiv")
 
 
 @shared_task(bind=True, max_retries=3, default_retry_delay=60)
@@ -26,9 +31,7 @@ def check_overdue_borrowings(self):
         dict: Summary of the task execution
     """
     try:
-        kyiv_tz = pytz.timezone("Europe/Kyiv")
-        kyiv_time = timezone.now().astimezone(kyiv_tz)
-        today = kyiv_time.date()
+        today = timezone.now().astimezone(KYIV_TZ).date()
 
         # Get all overdue borrowings
         overdue_borrowings = (
@@ -51,7 +54,7 @@ def check_overdue_borrowings(self):
             message = (
                 "🎉 <b>No Overdue Borrowings Today!</b>\n"
                 f"📅 <b>Date</b>: {today:%Y-%m-%d}\n"
-                f"🕘 <b>Checked at</b>: {kyiv_time:%H:%M (Kyiv time)}\n"
+                f"🕘 <b>Checked at</b>: {timezone.now().astimezone(KYIV_TZ):%H:%M (Kyiv time)}\n"
                 "✅ All borrowings are up to date!"
             )
 
@@ -72,7 +75,7 @@ def check_overdue_borrowings(self):
                 "overdue_count": 0,
                 "message": "No overdue borrowings found",
                 "date": today.isoformat(),
-                "timestamp": kyiv_time.isoformat(),
+                "timestamp": timezone.now().astimezone(KYIV_TZ).isoformat(),
             }
 
         # Send notification for each overdue borrowing
@@ -97,8 +100,8 @@ def check_overdue_borrowings(self):
                     f"⏰ <b>Days Overdue</b>: {days_overdue} day{'s' if days_overdue != 1 else ''}\n"
                     f"💰 <b>Daily Fee</b>: ${borrowing.book.daily_fee}\n"
                     f"🧾 <b>Borrowing ID</b>: {borrowing.id}\n"
-                    f"💸 <b>Current Total Fee</b>: ${borrowing.total_fee}\n"
-                    f"🕘 <b>Alert Time</b>: {kyiv_time:%H:%M (Kyiv time)}"
+                    f"💸 <b>Current Total Fee</b>: ${borrowing.total_amount_due}\n"
+                    f"🕘 <b>Alert Time</b>: {timezone.now().astimezone(KYIV_TZ):%H:%M (Kyiv time)}"
                 )
 
                 success = send_telegram_message(message)
@@ -126,7 +129,7 @@ def check_overdue_borrowings(self):
         summary_message = (
             f"📊 <b>Daily Overdue Report</b>\n"
             f"📅 <b>Date</b>: {today:%Y-%m-%d}\n"
-            f"🕘 <b>Report Time</b>: {kyiv_time:%H:%M (Kyiv time)}\n"
+            f"🕘 <b>Report Time</b>: {timezone.now().astimezone(KYIV_TZ):%H:%M (Kyiv time)}\n"
             f"⚠️ <b>Total Overdue</b>: {overdue_count}\n"
             f"✅ <b>Notifications Sent</b>: {successful_notifications}\n"
             f"❌ <b>Failed Notifications</b>: {failed_notifications}"
@@ -160,7 +163,7 @@ def check_overdue_borrowings(self):
             "failed_notifications": failed_notifications,
             "failed_borrowing_ids": failed_borrowing_ids,
             "date": today.isoformat(),
-            "timestamp": kyiv_time.isoformat(),
+            "timestamp": timezone.now().astimezone(KYIV_TZ).isoformat(),
         }
 
     except Exception as exc:
@@ -184,9 +187,6 @@ def send_overdue_notification(borrowing_id):
         dict: Result of the notification attempt
     """
 
-    kyiv_tz = pytz.timezone("Europe/Kyiv")
-    kyiv_time = timezone.now().astimezone(kyiv_tz)
-
     try:
         borrowing = Borrowing.objects.select_related("book", "user").get(
             id=borrowing_id
@@ -199,7 +199,7 @@ def send_overdue_notification(borrowing_id):
                 "reason": "Book already returned",
             }
 
-        today = timezone.now().date()
+        today = timezone.now().astimezone(KYIV_TZ).date()
 
         if borrowing.expected_return_date > today:
             return {
@@ -221,8 +221,8 @@ def send_overdue_notification(borrowing_id):
             f"⏰ <b>Days Overdue</b>: {days_overdue} day{'s' if days_overdue != 1 else ''}\n"
             f"💰 <b>Daily Fee</b>: ${borrowing.book.daily_fee}\n"
             f"🧾 <b>Borrowing ID</b>: {borrowing.id}\n"
-            f"💸 <b>Current Total Fee</b>: ${borrowing.total_fee}\n"
-            f"🕘 <b>Alert Time</b>: {kyiv_time:%H:%M (Kyiv time)}"
+            f"💸 <b>Current Total Fee</b>: ${borrowing.total_amount_due}\n"
+            f"🕘 <b>Alert Time</b>: {timezone.now().astimezone(KYIV_TZ):%H:%M (Kyiv time)}"
         )
 
         success = send_telegram_message(message)

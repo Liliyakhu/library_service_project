@@ -215,6 +215,16 @@ CELERY_SEND_EVENTS = True
 #         # 'schedule': crontab(hour=9, minute=0),  # Run daily at 9:00 AM
 #         # Uncomment above and comment the line above to use cron-style scheduling
 #     },
+#     # NEW: Check expired Stripe sessions every minute
+#     'check-expired-stripe-sessions': {
+#         'task': 'payments.tasks.check_expired_stripe_sessions',
+#         'schedule': 60.0,  # Run every 60 seconds (1 minute)
+#     },
+#     # NEW: Cleanup old expired payments weekly
+#     'cleanup-old-expired-payments': {
+#         'task': 'payments.tasks.cleanup_old_expired_payments',
+#         'schedule': 60.0 * 60.0 * 24.0 * 7.0,  # Run every 7 days
+#     },
 # }
 # CELERY_BEAT_SCHEDULER = 'django_celery_beat.schedulers:DatabaseScheduler'
 

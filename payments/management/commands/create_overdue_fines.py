@@ -20,9 +20,7 @@ class Command(BaseCommand):
         # Find all overdue borrowings without fine payments
         overdue_borrowings = Borrowing.objects.filter(
             actual_return_date__isnull=False,
-        ).exclude(
-            payments__type="fine"
-        )
+        ).exclude(payments__type="fine")
 
         self.stdout.write(f"Found {overdue_borrowings.count()} overdue borrowings")
 

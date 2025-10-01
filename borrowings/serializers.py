@@ -1,10 +1,14 @@
-from django.conf import settings
-from rest_framework import serializers
+import pytz
 
+from rest_framework import serializers
 from borrowings.models import Borrowing
 from payments.models import Payment
 from books.serializers import BookSerializer
 from payments.serializers import PaymentSerializer
+from django.utils import timezone
+
+
+KYIV_TZ = pytz.timezone("Europe/Kyiv")
 
 
 class BorrowingCreateSerializer(serializers.ModelSerializer):
@@ -25,7 +29,7 @@ class BorrowingCreateSerializer(serializers.ModelSerializer):
 
     def validate_expected_return_date(self, value):
         """Validate expected return date"""
-        today = settings.KYIV_TIME.date()
+        today = timezone.now().astimezone(KYIV_TZ).date()
 
         if value <= today:
             raise serializers.ValidationError(
@@ -59,9 +63,13 @@ class BorrowingDetailSerializer(serializers.ModelSerializer):
     is_overdue = serializers.BooleanField(read_only=True)
     days_overdue = serializers.IntegerField(read_only=True)
     borrowing_days = serializers.IntegerField(read_only=True)
-    payment_fee = serializers.DecimalField(max_digits=8, decimal_places=2, read_only=True)
+    payment_fee = serializers.DecimalField(
+        max_digits=8, decimal_places=2, read_only=True
+    )
     fine_fee = serializers.DecimalField(max_digits=8, decimal_places=2, read_only=True)
-    total_amount_due = serializers.DecimalField(max_digits=8, decimal_places=2, read_only=True)
+    total_amount_due = serializers.DecimalField(
+        max_digits=8, decimal_places=2, read_only=True
+    )
     was_returned_late = serializers.BooleanField(read_only=True)
     needs_fine_payment = serializers.BooleanField(read_only=True)
     payments = PaymentSerializer(many=True, read_only=True)
