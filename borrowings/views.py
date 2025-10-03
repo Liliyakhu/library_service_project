@@ -15,6 +15,7 @@ from borrowings.serializers import (
 )
 from users.authentication import AuthorizeHeaderJWTAuthentication
 from borrowings.models import Borrowing
+from payments.models import Payment
 from payments.services import (
     create_payment_for_borrowing,
     create_fine_payment_for_borrowing,
@@ -58,6 +59,78 @@ class BorrowingViewSet(viewsets.ModelViewSet):
 
     @transaction.atomic
     def create(self, request, *args, **kwargs):
+        """
+                Create a new borrowing.
+                Users cannot borrow if they have any pending payments.
+                """
+        user = request.user
+
+        # Check for pending payments BEFORE creating borrowing
+        pending_payments = Payment.objects.filter(
+            borrowing__user=user,
+            status="pending"
+        ).select_related("borrowing__book")
+
+        expired_payments = Payment.objects.filter(
+            borrowing__user=user,
+            status="expired"
+        ).select_related("borrowing__book")
+
+        pending_count = pending_payments.count()
+        expired_count = expired_payments.count()
+
+        if pending_count > 0:
+            # Build detailed error response with payment information
+            payment_details = []
+            for payment in pending_payments[:5]:  # Show max 5 payments
+                payment_details.append({
+                    "payment_id": payment.id,
+                    "borrowing_id": payment.borrowing.id,
+                    "book_title": payment.borrowing.book.title,
+                    "amount": str(payment.money_to_pay),
+                    "type": payment.get_type_display(),
+                    "session_url": payment.session_url,
+                    "created_at": payment.created_at.isoformat(),
+                    "is_renewable": payment.is_renewable,
+                })
+
+            error_response = {
+                "error": "Cannot create new borrowing",
+                "reason": f"You have {pending_count} pending payment(s) that must be completed first",
+                "pending_payments": payment_details,
+                "action_required": "Please complete or renew your pending payments before borrowing new books",
+            }
+
+            # Add helpful hints based on payment states
+            # expired_count = sum(1 for p in payment_details if p["is_renewable"])
+            # active_count = len(payment_details) - expired_count
+
+            help_messages = []
+            if pending_count > 0:
+                help_messages.append(
+                    f"{pending_count} active payment(s): Visit the session_url to complete payment"
+                )
+            if expired_count > 0:
+                help_messages.append(
+                    f"{expired_count} expired session(s): Use POST /api/payments/{{id}}/renew_session/ to renew"
+                )
+
+            error_response["help"] = {
+                "summary": " | ".join(help_messages) if help_messages else "Complete your pending payments",
+                "endpoints": {
+                    "view_all_payments": "GET /api/payments/my_payments/",
+                    "renewable_payments": "GET /api/payments/renewable_payments/",
+                    "renew_session": "POST /api/payments/{payment_id}/renew_session/"
+                }
+            }
+
+            if pending_count > 5:
+                error_response[
+                    "note"] = f"Showing 5 of {pending_count} pending payments. See /api/payments/my_payments/ for full list."
+
+            return Response(error_response, status=status.HTTP_400_BAD_REQUEST)
+
+        # No pending payments - proceed with borrowing creation
         serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
 
@@ -174,3 +247,51 @@ class BorrowingViewSet(viewsets.ModelViewSet):
         #     }
 
         return Response(response_data, status=status.HTTP_200_OK)
+
+    @action(detail=False, methods=["get"])
+    def can_borrow(self, request):
+        """
+        Check if the current user can create a new borrowing.
+        Returns borrowing eligibility and pending payment details.
+        """
+        user = request.user
+
+        # Check for pending payments
+        pending_payments = Payment.objects.filter(
+            borrowing__user=user,
+            status="pending"
+        ).select_related("borrowing__book")
+
+        pending_count = pending_payments.count()
+
+        if pending_count == 0:
+            return Response({
+                "can_borrow": True,
+                "message": "You can create new borrowings",
+                "pending_payments_count": 0
+            })
+
+        # Build payment details
+        payment_details = []
+        for payment in pending_payments:
+            payment_details.append({
+                "payment_id": payment.id,
+                "borrowing_id": payment.borrowing.id,
+                "book_title": payment.borrowing.book.title,
+                "amount": str(payment.money_to_pay),
+                "type": payment.get_type_display(),
+                "session_url": payment.session_url,
+                "is_renewable": payment.is_renewable,
+            })
+
+        return Response({
+            "can_borrow": False,
+            "message": f"You have {pending_count} pending payment(s). Please complete them before borrowing.",
+            "pending_payments_count": pending_count,
+            "pending_payments": payment_details,
+            "help": {
+                "view_payments": "/api/payments/my_payments/",
+                "renewable_payments": "/api/payments/renewable_payments/",
+                "renew_session": "/api/payments/{payment_id}/renew_session/"
+            }
+        })

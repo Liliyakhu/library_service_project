@@ -3,6 +3,7 @@ import json
 import pytz
 import stripe
 import logging
+import requests
 
 from django.conf import settings
 from django.http import HttpResponse
@@ -19,6 +20,32 @@ logger = logging.getLogger(__name__)
 
 
 KYIV_TZ = pytz.timezone("Europe/Kyiv")
+
+TELEGRAM_API_URL = f"https://api.telegram.org/bot{settings.TELEGRAM_BOT_TOKEN}/sendMessage"
+TELEGRAM_CHAT_ID = settings.TELEGRAM_CHAT_ID
+
+
+def notify_telegram(payment: Payment):
+    """Send Telegram notification with payment details"""
+    try:
+        message = (
+            f"✅ Successful Payment\n\n"
+            f"💳 Payment ID: {payment.id}\n"
+            f"🧾 Borrowing ID: {payment.borrowing.id}\n"
+            f"👤 Payment of fine: {payment.type}\n"
+            f"👤 User: {payment.borrowing.user.email}\n"
+            f"📚 Book: {payment.borrowing.book.title}\n"
+            f"💰 Amount: {payment.money_to_pay}\n"
+            f"📅 Date: {payment.created_at.strftime('%Y-%m-%d %H:%M:%S')}"
+        )
+        requests.post(TELEGRAM_API_URL, data={
+            "chat_id": TELEGRAM_CHAT_ID,
+            "text": message,
+            "parse_mode": "HTML"
+        })
+        logger.info(f"Telegram notification sent for payment {payment.id}")
+    except Exception as e:
+        logger.error(f"Failed to send Telegram notification: {e}")
 
 
 @method_decorator(csrf_exempt, name="dispatch")
@@ -41,20 +68,14 @@ class StripeWebhookView(View):
         try:
             event = stripe.Webhook.construct_event(payload, sig_header, endpoint_secret)
             logger.info(f"Event verified: {event['type']}")
-
-        except ValueError as e:
-            logger.error(f"Invalid payload: {e}")
-            return HttpResponse(status=400)
-        except stripe.error.SignatureVerificationError as e:
-            logger.error(f"Invalid signature: {e}")
+        except (ValueError, stripe.error.SignatureVerificationError) as e:
+            logger.error(f"Webhook verification failed: {e}")
             return HttpResponse(status=400)
 
-        # Handle the checkout.session.completed event
         if event["type"] == "checkout.session.completed":
             return self.handle_checkout_completed(event)
-        else:
-            logger.info(f"Unhandled event type: {event['type']}")
 
+        logger.info(f"Unhandled event type: {event['type']}")
         return HttpResponse(status=200)
 
     def handle_checkout_completed(self, event):
@@ -77,7 +98,7 @@ class StripeWebhookView(View):
                 logger.info(f"Payment {payment.id} marked as paid!")
 
                 # Optional: Add notification logic here
-                # self.notify_payment_success(payment)
+                notify_telegram(payment)
 
             else:
                 logger.warning(
@@ -88,11 +109,6 @@ class StripeWebhookView(View):
             logger.error(f"Payment not found for session {session_id}")
 
         return HttpResponse(status=200)
-
-    def notify_payment_success(self, payment):
-        """Optional: Send notifications when payment is successful"""
-        # You can add email/telegram notifications here
-        pass
 
 
 @csrf_exempt

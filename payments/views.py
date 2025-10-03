@@ -182,7 +182,13 @@ class PaymentViewSet(viewsets.ModelViewSet):
             .order_by("-created_at")
         )
 
-        serializer = PaymentSerializer(payments, many=True)
+        page = self.paginate_queryset(payments)
+        if page is not None:
+            serializer = self.get_serializer(page, many=True)
+            return self.get_paginated_response(serializer.data)
+
+            # No pagination (fallback)
+        serializer = self.get_serializer(payments, many=True)
         return Response(serializer.data)
 
     @action(detail=False, methods=["post"])
