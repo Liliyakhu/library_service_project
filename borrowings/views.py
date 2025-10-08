@@ -1,17 +1,20 @@
+import logging
 from rest_framework import viewsets, status
 from rest_framework.decorators import action
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
-from django.db import transaction
-from django.core.exceptions import ValidationError
+from django.db import transaction, IntegrityError
+from django.core.exceptions import ValidationError as DjangoValidationError
 from django.utils.html import escape
-from notifications.telegram import send_telegram_message
+from rest_framework.exceptions import ValidationError
 
+from notifications.telegram import send_telegram_message
 from borrowings.permissions import IsOwnerOrStaff
 from borrowings.serializers import (
     BorrowingCreateSerializer,
     BorrowingListSerializer,
     BorrowingDetailSerializer,
+    BorrowingUpdateSerializer,
 )
 from users.authentication import AuthorizeHeaderJWTAuthentication
 from borrowings.models import Borrowing
@@ -20,6 +23,8 @@ from payments.services import (
     create_payment_for_borrowing,
     create_fine_payment_for_borrowing,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class BorrowingViewSet(viewsets.ModelViewSet):
@@ -39,6 +44,7 @@ class BorrowingViewSet(viewsets.ModelViewSet):
                 try:
                     queryset = queryset.filter(user_id=int(user_id))
                 except (ValueError, TypeError):
+                    logger.warning(f"Invalid user_id parameter: {user_id}")
                     queryset = queryset.none()
 
         # Active/inactive filtering
@@ -55,25 +61,26 @@ class BorrowingViewSet(viewsets.ModelViewSet):
             return BorrowingCreateSerializer
         elif self.action == "list":
             return BorrowingListSerializer
+        elif self.action in ["update", "partial_update"]:
+            return BorrowingUpdateSerializer
         return BorrowingDetailSerializer
 
     @transaction.atomic
     def create(self, request, *args, **kwargs):
         """
-                Create a new borrowing.
-                Users cannot borrow if they have any pending payments.
-                """
+        Create a new borrowing with proper transaction handling.
+        Entire operation is atomic - if payment fails, borrowing is rolled back.
+        Users cannot borrow if they have any pending payments.
+        """
         user = request.user
 
         # Check for pending payments BEFORE creating borrowing
         pending_payments = Payment.objects.filter(
-            borrowing__user=user,
-            status="pending"
+            borrowing__user=user, status="pending"
         ).select_related("borrowing__book")
 
         expired_payments = Payment.objects.filter(
-            borrowing__user=user,
-            status="expired"
+            borrowing__user=user, status="expired"
         ).select_related("borrowing__book")
 
         pending_count = pending_payments.count()
@@ -83,16 +90,17 @@ class BorrowingViewSet(viewsets.ModelViewSet):
             # Build detailed error response with payment information
             payment_details = []
             for payment in pending_payments[:5]:  # Show max 5 payments
-                payment_details.append({
-                    "payment_id": payment.id,
-                    "borrowing_id": payment.borrowing.id,
-                    "book_title": payment.borrowing.book.title,
-                    "amount": str(payment.money_to_pay),
-                    "type": payment.get_type_display(),
-                    "session_url": payment.session_url,
-                    "created_at": payment.created_at.isoformat(),
-                    "is_renewable": payment.is_renewable,
-                })
+                payment_details.append(
+                    {
+                        "payment_id": payment.id,
+                        "borrowing_id": payment.borrowing.id,
+                        "book_title": payment.borrowing.book.title,
+                        "amount": str(payment.money_to_pay),
+                        "type": payment.get_type_display(),
+                        "session_url": payment.session_url,
+                        "is_renewable": payment.is_renewable,
+                    }
+                )
 
             error_response = {
                 "error": "Cannot create new borrowing",
@@ -100,10 +108,6 @@ class BorrowingViewSet(viewsets.ModelViewSet):
                 "pending_payments": payment_details,
                 "action_required": "Please complete or renew your pending payments before borrowing new books",
             }
-
-            # Add helpful hints based on payment states
-            # expired_count = sum(1 for p in payment_details if p["is_renewable"])
-            # active_count = len(payment_details) - expired_count
 
             help_messages = []
             if pending_count > 0:
@@ -116,17 +120,23 @@ class BorrowingViewSet(viewsets.ModelViewSet):
                 )
 
             error_response["help"] = {
-                "summary": " | ".join(help_messages) if help_messages else "Complete your pending payments",
+                "summary": (
+                    " | ".join(help_messages)
+                    if help_messages
+                    else "Complete your pending payments"
+                ),
                 "endpoints": {
                     "view_all_payments": "GET /api/payments/my_payments/",
                     "renewable_payments": "GET /api/payments/renewable_payments/",
-                    "renew_session": "POST /api/payments/{payment_id}/renew_session/"
-                }
+                    "renew_session": "POST /api/payments/{payment_id}/renew_session/",
+                },
             }
 
             if pending_count > 5:
-                error_response[
-                    "note"] = f"Showing 5 of {pending_count} pending payments. See /api/payments/my_payments/ for full list."
+                error_response["note"] = (
+                    f"Showing 5 of {pending_count} pending payments. "
+                    f"See /api/payments/my_payments/ for full list."
+                )
 
             return Response(error_response, status=status.HTTP_400_BAD_REQUEST)
 
@@ -134,49 +144,120 @@ class BorrowingViewSet(viewsets.ModelViewSet):
         serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
 
-        borrowing = serializer.save()
+        try:
+            # This will handle book inventory atomically
+            borrowing = serializer.save()
+        except IntegrityError as e:
+            # Handle unique constraint violations
+            if "unique_active_borrowing_per_user_book" in str(e):
+                return Response(
+                    {
+                        "error": "You already have an active borrowing for this book",
+                        "detail": "Please return your current borrowing before borrowing this book again",
+                    },
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            logger.error(f"IntegrityError creating borrowing: {e}")
+            raise
+        except DjangoValidationError as e:
+            logger.error(f"ValidationError creating borrowing: {e}")
+            return Response(
+                {"error": "Validation failed", "details": e.message_dict},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
 
-        # Create payment + stripe session
+        # Create payment + stripe session within same transaction
         try:
             payment = create_payment_for_borrowing(borrowing, request=request)
         except Exception as e:
-            # If payment/session creation failed, rollback borrowing too
+            logger.error(f"Payment creation failed for borrowing {borrowing.id}: {e}")
+            # Transaction will rollback automatically due to @transaction.atomic
             raise ValidationError(f"Payment creation failed: {str(e)}")
 
         response_serializer = BorrowingDetailSerializer(borrowing)
 
-        # Build a neat, HTML-safe message
-        b = borrowing
-        book = b.book
-        user = b.user
-        msg = (
-            "<b>📚 New Borrowing</b>\n"
-            f"👤 <b>User</b>: {escape(user.full_name)} ({escape(user.email)})\n"
-            f"📖 <b>Book</b>: {escape(book.title)} — {escape(book.author)}\n"
-            f"📅 <b>Borrowed</b>: {b.borrow_date:%Y-%m-%d}\n"
-            f"🗓️ <b>Due</b>: {b.expected_return_date:%Y-%m-%d}\n"
-            f"💸 <b>Daily fee</b>: {book.daily_fee}\n"
-            f"📦 <b>Inventory left</b>: {book.inventory}\n"
-            f"🧾 <b>Borrowing ID</b>: {b.id}\n"
-            f"💳 <b>Payment</b>: {payment.money_to_pay} — {payment.get_type_display()}\n"
-            f"🔗 <a href='{payment.session_url}'>Pay now</a>"
-        )
-        # Fire-and-forget; we don't block user if Telegram fails
-        send_telegram_message(msg)
+        # Send Telegram notification (fire-and-forget)
+        try:
+            b = borrowing
+            book = b.book
+            user = b.user
+            msg = (
+                "<b>📚 New Borrowing</b>\n"
+                f"👤 <b>User</b>: {escape(user.full_name)} ({escape(user.email)})\n"
+                f"📖 <b>Book</b>: {escape(book.title)} — {escape(book.author)}\n"
+                f"📅 <b>Borrowed</b>: {b.borrow_date:%Y-%m-%d}\n"
+                f"🗓️ <b>Due</b>: {b.expected_return_date:%Y-%m-%d}\n"
+                f"💸 <b>Daily fee</b>: {book.daily_fee}\n"
+                f"📦 <b>Inventory left</b>: {book.inventory}\n"
+                f"🧾 <b>Borrowing ID</b>: {b.id}\n"
+                f"💳 <b>Payment</b>: {payment.money_to_pay} — {payment.get_type_display()}\n"
+                f"🔗 <a href='{payment.session_url}'>Pay now</a>"
+            )
+            if not send_telegram_message(msg):
+                logger.warning(
+                    f"Failed to send Telegram notification for borrowing {b.id}"
+                )
+        except Exception as e:
+            logger.error(f"Error sending Telegram notification: {e}")
 
+        logger.info(
+            f"Successfully created borrowing {borrowing.id} for user {user.email}"
+        )
         return Response(response_serializer.data, status=status.HTTP_201_CREATED)
 
     def update(self, request, *args, **kwargs):
-        return Response(
-            {"error": "Updating borrowings not allowed. Use return_book action."},
-            status=status.HTTP_405_METHOD_NOT_ALLOWED,
-        )
+        """
+        FIX: Allow staff to update certain fields (like expected_return_date).
+        Regular users still cannot update.
+        """
+        if not request.user.is_staff:
+            return Response(
+                {
+                    "error": "Only staff can update borrowings",
+                    "hint": "Use /return_book/ action to return a book",
+                },
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        borrowing = self.get_object()
+
+        # Prevent updating if already returned
+        if borrowing.actual_return_date:
+            return Response(
+                {"error": "Cannot update a returned borrowing"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        return super().update(request, *args, **kwargs)
+
+    def partial_update(self, request, *args, **kwargs):
+        """Allow partial updates with same restrictions as full update"""
+        return self.update(request, *args, **kwargs)
 
     def destroy(self, request, *args, **kwargs):
-        return Response(
-            {"error": "Deleting borrowings not allowed."},
-            status=status.HTTP_405_METHOD_NOT_ALLOWED,
+        """FIX: Only allow staff to delete, and only if no payments exist"""
+        if not request.user.is_staff:
+            return Response(
+                {"error": "Only staff can delete borrowings"},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        borrowing = self.get_object()
+
+        # Prevent deletion if payments exist
+        if borrowing.payments.exists():
+            return Response(
+                {
+                    "error": "Cannot delete borrowing with associated payments",
+                    "payment_count": borrowing.payments.count(),
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        logger.warning(
+            f"Staff user {request.user.email} deleted borrowing {borrowing.id}"
         )
+        return super().destroy(request, *args, **kwargs)
 
     @action(detail=True, methods=["post"])
     @transaction.atomic
@@ -219,32 +300,25 @@ class BorrowingViewSet(viewsets.ModelViewSet):
                         f"🧾 <b>Borrowing ID</b>: {borrowing.id}\n"
                         f"🔗 <a href='{fine_payment.session_url}'>Pay Fine</a>"
                     )
-                    send_telegram_message(msg)
+                    if not send_telegram_message(msg):
+                        logger.warning(
+                            f"Failed to send fine notification for borrowing {borrowing.id}"
+                        )
 
                 except Exception as e:
-                    # Log error but don't fail the return process
-                    import logging
-
-                    logger = logging.getLogger(__name__)
                     logger.error(
                         f"Failed to create fine payment for borrowing {borrowing.id}: {e}"
                     )
 
-        except ValidationError as e:
-            return Response({"error": e.message}, status=status.HTTP_400_BAD_REQUEST)
+        except DjangoValidationError as e:
+            logger.error(f"Validation error returning book {borrowing.id}: {e}")
+            return Response({"error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
 
-        # Prepare response data
         response_data = BorrowingDetailSerializer(borrowing).data
-
-        # Add fine payment info if applicable
-        # if fine_payment:
-        #     response_data["fine_payment"] = {
-        #         "id": fine_payment.id,
-        #         "amount": str(fine_payment.money_to_pay),
-        #         "session_url": fine_payment.session_url,
-        #         "status": fine_payment.status,
-        #         "message": "Fine payment required for overdue return",
-        #     }
+        logger.info(
+            f"Book returned for borrowing {borrowing.id}. "
+            f"Late: {borrowing.was_returned_late}"
+        )
 
         return Response(response_data, status=status.HTTP_200_OK)
 
@@ -258,40 +332,45 @@ class BorrowingViewSet(viewsets.ModelViewSet):
 
         # Check for pending payments
         pending_payments = Payment.objects.filter(
-            borrowing__user=user,
-            status="pending"
+            borrowing__user=user, status="pending"
         ).select_related("borrowing__book")
 
         pending_count = pending_payments.count()
 
         if pending_count == 0:
-            return Response({
-                "can_borrow": True,
-                "message": "You can create new borrowings",
-                "pending_payments_count": 0
-            })
+            return Response(
+                {
+                    "can_borrow": True,
+                    "message": "You can create new borrowings",
+                    "pending_payments_count": 0,
+                }
+            )
 
         # Build payment details
         payment_details = []
         for payment in pending_payments:
-            payment_details.append({
-                "payment_id": payment.id,
-                "borrowing_id": payment.borrowing.id,
-                "book_title": payment.borrowing.book.title,
-                "amount": str(payment.money_to_pay),
-                "type": payment.get_type_display(),
-                "session_url": payment.session_url,
-                "is_renewable": payment.is_renewable,
-            })
+            payment_details.append(
+                {
+                    "payment_id": payment.id,
+                    "borrowing_id": payment.borrowing.id,
+                    "book_title": payment.borrowing.book.title,
+                    "amount": str(payment.money_to_pay),
+                    "type": payment.get_type_display(),
+                    "session_url": payment.session_url,
+                    "is_renewable": payment.is_renewable,
+                }
+            )
 
-        return Response({
-            "can_borrow": False,
-            "message": f"You have {pending_count} pending payment(s). Please complete them before borrowing.",
-            "pending_payments_count": pending_count,
-            "pending_payments": payment_details,
-            "help": {
-                "view_payments": "/api/payments/my_payments/",
-                "renewable_payments": "/api/payments/renewable_payments/",
-                "renew_session": "/api/payments/{payment_id}/renew_session/"
+        return Response(
+            {
+                "can_borrow": False,
+                "message": f"You have {pending_count} pending payment(s). Please complete them before borrowing.",
+                "pending_payments_count": pending_count,
+                "pending_payments": payment_details,
+                "help": {
+                    "view_payments": "/api/payments/my_payments/",
+                    "renewable_payments": "/api/payments/renewable_payments/",
+                    "renew_session": "/api/payments/{payment_id}/renew_session/",
+                },
             }
-        })
+        )

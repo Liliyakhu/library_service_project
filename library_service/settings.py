@@ -12,6 +12,7 @@ https://docs.djangoproject.com/en/5.1/ref/settings/
 
 import os
 import pytz
+from django.core.exceptions import ImproperlyConfigured
 
 from django.utils import timezone
 from datetime import timedelta
@@ -30,8 +31,16 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 # Quick-start development settings - unsuitable for production
 # See https://docs.djangoproject.com/en/5.1/howto/deployment/checklist/
 
+# SECURITY WARNING: don't run with debug turned on in production!
+DEBUG = os.getenv("DEBUG", "False").lower() == "true"
+
 # SECURITY WARNING: keep the secret key used in production secret!
-SECRET_KEY = os.environ["SECRET_KEY"]
+if DEBUG:
+    SECRET_KEY = os.getenv("SECRET_KEY", "dev-secret-key")
+else:
+    SECRET_KEY = os.getenv("SECRET_KEY")
+    if not SECRET_KEY:
+        raise ImproperlyConfigured("SECRET_KEY is not set for production!")
 
 TELEGRAM_NOTIFICATIONS_ENABLED = (
     os.getenv("TELEGRAM_NOTIFICATIONS_ENABLED", "False").lower() == "true"
@@ -39,10 +48,9 @@ TELEGRAM_NOTIFICATIONS_ENABLED = (
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
 
-# SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = True
-
-ALLOWED_HOSTS = []
+ALLOWED_HOSTS = (
+    os.getenv("ALLOWED_HOSTS", "").split(",") if os.getenv("ALLOWED_HOSTS") else []
+)
 
 INTERNAL_IPS = ["127.0.0.1", "localhost"]
 
@@ -105,6 +113,7 @@ DATABASES = {
     "default": {
         "ENGINE": "django.db.backends.sqlite3",
         "NAME": BASE_DIR / "db.sqlite3",
+        "ATOMIC_REQUESTS": True,
     }
 }
 
@@ -132,24 +141,17 @@ AUTH_PASSWORD_VALIDATORS = [
 # https://docs.djangoproject.com/en/5.1/topics/i18n/
 
 LANGUAGE_CODE = "en-us"
-
 TIME_ZONE = "Europe/Kyiv"
-KYIV_TZ = pytz.timezone("Europe/Kyiv")
-KYIV_TIME = timezone.now().astimezone(KYIV_TZ)
-
 USE_I18N = True
-
 USE_TZ = True
 
 
 # Static files (CSS, JavaScript, Images)
 # https://docs.djangoproject.com/en/5.1/howto/static-files/
-
 STATIC_URL = "static/"
 
 # Default primary key field type
 # https://docs.djangoproject.com/en/5.1/ref/settings/#default-auto-field
-
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
 AUTH_USER_MODEL = "users.User"
@@ -170,6 +172,14 @@ REST_FRAMEWORK = {
     ],
     "DEFAULT_PAGINATION_CLASS": "rest_framework.pagination.PageNumberPagination",
     "PAGE_SIZE": 20,
+    "DEFAULT_THROTTLE_CLASSES": [
+        "rest_framework.throttling.AnonRateThrottle",
+        "rest_framework.throttling.UserRateThrottle",
+    ],
+    "DEFAULT_THROTTLE_RATES": {
+        "anon": "100/hour",
+        "user": "1000/hour",
+    },
 }
 
 SIMPLE_JWT = {
@@ -230,15 +240,14 @@ CELERY_SEND_EVENTS = True
 
 
 # Stripe settings
-# Your test publishable key
-STRIPE_PUBLISHABLE_KEY = os.getenv("STRIPE_PUBLISHABLE_KEY", "pk_test")
-# Your test secret key
-STRIPE_SECRET_KEY = os.getenv("STRIPE_SECRET_KEY", "sk_test")
-# Webhook endpoint secret
-STRIPE_WEBHOOK_SECRET = os.getenv("STRIPE_WEBHOOK_SECRET", "whsec")
+STRIPE_PUBLISHABLE_KEY = os.getenv("STRIPE_PUBLISHABLE_KEY", "")
+STRIPE_SECRET_KEY = os.getenv("STRIPE_SECRET_KEY", "")
+STRIPE_WEBHOOK_SECRET = os.getenv("STRIPE_WEBHOOK_SECRET", "")
 
-# Configure Stripe
-stripe.api_key = STRIPE_SECRET_KEY
+# Only configure Stripe if we have a valid key
+if STRIPE_SECRET_KEY and STRIPE_SECRET_KEY.startswith("sk_"):
+    stripe.api_key = STRIPE_SECRET_KEY
+
 
 # Payment configuration
 PAYMENT_SUCCESS_URL = os.getenv(
@@ -248,4 +257,52 @@ PAYMENT_CANCEL_URL = os.getenv(
     "PAYMENT_CANCEL_URL", "http://localhost:8000/api/payments/cancel/"
 )
 
+# Business logic constants
 FINE_MULTIPLIER = float(os.getenv("FINE_MULTIPLIER", "2.0"))
+MAX_BORROWING_DAYS = int(os.getenv("MAX_BORROWING_DAYS", "30"))
+STRIPE_SESSION_EXPIRY_HOURS = 24
+OLD_PAYMENT_CLEANUP_DAYS = 30
+
+# Logging configuration
+LOGGING = {
+    "version": 1,
+    "disable_existing_loggers": False,
+    "formatters": {
+        "verbose": {
+            "format": "{levelname} {asctime} {module} {message}",
+            "style": "{",
+        },
+    },
+    "handlers": {
+        "console": {
+            "class": "logging.StreamHandler",
+            "formatter": "verbose",
+        },
+        "file": {
+            "class": "logging.FileHandler",
+            "filename": BASE_DIR / "logs" / "library.log",
+            "formatter": "verbose",
+        },
+    },
+    "loggers": {
+        "django": {
+            "handlers": ["console", "file"],
+            "level": os.getenv("DJANGO_LOG_LEVEL", "INFO"),
+        },
+        "borrowings": {
+            "handlers": ["console", "file"],
+            "level": "INFO",
+        },
+        "payments": {
+            "handlers": ["console", "file"],
+            "level": "INFO",
+        },
+        "notifications": {
+            "handlers": ["console", "file"],
+            "level": "INFO",
+        },
+    },
+}
+
+# Create logs directory if it doesn't exist
+(BASE_DIR / "logs").mkdir(exist_ok=True)

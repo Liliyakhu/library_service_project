@@ -1,14 +1,14 @@
-import pytz
-
+import logging
 from decimal import Decimal
 from django.db import models
+from django.conf import settings
 from django.core.exceptions import ValidationError
 from django.utils import timezone
 
 from borrowings.models import Borrowing
+from core.utils.timezone_utils import KYIV_TZ, kyiv_now
 
-
-KYIV_TZ = pytz.timezone("Europe/Kyiv")
+logger = logging.getLogger(__name__)
 
 
 class Payment(models.Model):
@@ -58,6 +58,18 @@ class Payment(models.Model):
                 condition=models.Q(session_id__isnull=False),
                 name="unique_session_id",
             ),
+            # Only one paid payment per type per borrowing
+            models.UniqueConstraint(
+                fields=["borrowing", "type"],
+                condition=models.Q(status="paid"),
+                name="unique_paid_payment_per_type",
+            ),
+        ]
+
+        indexes = [
+            models.Index(fields=["status", "session_expires_at"]),
+            models.Index(fields=["borrowing", "type", "status"]),
+            models.Index(fields=["session_id"]),
         ]
 
     def clean(self):
@@ -74,20 +86,23 @@ class Payment(models.Model):
         if self.status == "paid" and (not self.session_url or not self.session_id):
             raise ValidationError("Paid payments must have session_url and session_id")
 
+        # Validate money_to_pay is positive
+        if self.money_to_pay <= 0:
+            raise ValidationError("Payment amount must be greater than zero")
+
     def save(self, *args, **kwargs):
         """Override save to set money_to_pay and validate"""
-        # Set money_to_pay from borrowing total_amount_due if not set
-        if not self.money_to_pay:
-            self.money_to_pay = self.borrowing.total_amount_due
+        # Run validation first
+        self.full_clean()
 
-        # Set session expiration time when session is created (Stripe sessions expire in 24 hours)
+        # Set session expiration time when session is created
         if self.session_id and not self.session_expires_at:
-            self.session_expires_at = timezone.now().astimezone(
-                KYIV_TZ
-            ) + timezone.timedelta(hours=24)
-
-        # Run validation
-        self.clean()
+            self.session_expires_at = kyiv_now() + timezone.timedelta(
+                hours=settings.STRIPE_SESSION_EXPIRY_HOURS
+            )
+            logger.info(
+                f"Payment {self.pk}: Session expires at {self.session_expires_at}"
+            )
 
         super().save(*args, **kwargs)
 
@@ -104,17 +119,21 @@ class Payment(models.Model):
         """Check if payment session is expired"""
         if self.status == "expired":
             return True
-        if (
-            self.session_expires_at
-            and timezone.now().astimezone(KYIV_TZ) > self.session_expires_at
-        ):
+        if self.session_expires_at and kyiv_now() > self.session_expires_at:
             return True
         return False
 
     @property
     def is_renewable(self):
         """Check if payment can be renewed (expired or pending with expired session)"""
-        return self.status in ["expired", "pending"] and not self.is_paid
+        if self.status == "paid":
+            return False
+        if self.status == "expired":
+            return True
+        # Pending but session expired
+        if self.status == "pending" and self.is_expired:
+            return True
+        return False
 
     @property
     def borrower_email(self):
@@ -129,15 +148,27 @@ class Payment(models.Model):
     def expire_session(self):
         """Mark payment session as expired"""
         if self.status == "pending":
+            old_status = self.status
             self.status = "expired"
             self.save()
+            logger.info(
+                f"Payment {self.id}: Status changed from {old_status} to expired"
+            )
 
     def renew_session(self, new_session_id, new_session_url):
         """Renew payment session with new Stripe session data"""
+        if not self.is_renewable:
+            raise ValidationError("Payment is not renewable")
+
         self.session_id = new_session_id
         self.session_url = new_session_url
-        self.session_expires_at = timezone.now().astimezone(
-            KYIV_TZ
-        ) + timezone.timedelta(hours=24)
+        self.session_expires_at = kyiv_now() + timezone.timedelta(
+            hours=settings.STRIPE_SESSION_EXPIRY_HOURS
+        )
         self.status = "pending"
         self.save()
+
+        logger.info(
+            f"Payment {self.id}: Session renewed. "
+            f"New expiry: {self.session_expires_at}"
+        )

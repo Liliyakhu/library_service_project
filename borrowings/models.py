@@ -1,20 +1,14 @@
-import pytz
-
-from django.db import models
+import logging
+from django.db import models, transaction
 from django.conf import settings
 from django.utils import timezone
 from django.core.exceptions import ValidationError
 from decimal import Decimal
-from datetime import datetime
 
 from books.models import Book
+from core.utils.timezone_utils import KYIV_TZ, kyiv_today, normalize_to_date
 
-
-def kyiv_today():
-    return timezone.now().astimezone(KYIV_TZ).date()
-
-
-KYIV_TZ = pytz.timezone("Europe/Kyiv")
+logger = logging.getLogger(__name__)
 
 
 class Borrowing(models.Model):
@@ -51,24 +45,30 @@ class Borrowing(models.Model):
                 ),
                 name="expected_return_within_year",
             ),
+            # Prevent multiple active borrowings of same book by same user
+            models.UniqueConstraint(
+                fields=["user", "book"],
+                condition=models.Q(actual_return_date__isnull=True),
+                name="unique_active_borrowing_per_user_book",
+            ),
+        ]
+
+        indexes = [
+            models.Index(fields=["user", "actual_return_date"]),
+            models.Index(fields=["expected_return_date", "actual_return_date"]),
+            models.Index(fields=["book", "actual_return_date"]),
         ]
 
     def clean(self):
         super().clean()
 
-        # Normalize to date
-        if isinstance(self.borrow_date, datetime):
-            self.borrow_date = self.borrow_date.date()
-        if isinstance(self.expected_return_date, datetime):
-            self.expected_return_date = self.expected_return_date.date()
-        if isinstance(self.actual_return_date, datetime):
-            self.actual_return_date = self.actual_return_date.date()
+        # Normalize dates
+        self.borrow_date = normalize_to_date(self.borrow_date)
+        self.expected_return_date = normalize_to_date(self.expected_return_date)
+        self.actual_return_date = normalize_to_date(self.actual_return_date)
 
         # Validate borrow_date is not in the future
-        if (
-            self.borrow_date
-            and self.borrow_date > timezone.now().astimezone(KYIV_TZ).date()
-        ):
+        if self.borrow_date and self.borrow_date > kyiv_today():
             raise ValidationError(
                 {"borrow_date": "Borrow date cannot be in the future."}
             )
@@ -91,35 +91,33 @@ class Borrowing(models.Model):
                     }
                 )
 
-        # Check if book is available
-        if not self.pk and self.book and not self.book.is_available:
-            raise ValidationError(
-                {"book": "This book is currently not available for borrowing."}
-            )
-
     def save(self, *args, **kwargs):
-        """Override save to handle inventory and validation"""
+        self.full_clean()
+
         is_new = self.pk is None
         old_actual_return_date = None
 
         # Get old actual_return_date if updating
         if not is_new:
-            old_borrowing = Borrowing.objects.get(pk=self.pk)
-            old_actual_return_date = old_borrowing.actual_return_date
-
-        # Validate the model
-        self.clean()
+            try:
+                old_borrowing = Borrowing.objects.get(pk=self.pk)
+                old_actual_return_date = old_borrowing.actual_return_date
+            except Borrowing.DoesNotExist:
+                logger.error(f"Borrowing with pk {self.pk} not found during update")
+                raise
 
         # Handle inventory changes
         if is_new:
             # New borrowing - decrease inventory
             if not self.book.borrow():
                 raise ValidationError("Book is not available for borrowing.")
+            logger.info(f"Created borrowing {self.pk} for book {self.book.id}")
         else:
             # Existing borrowing - handle return
             if old_actual_return_date is None and self.actual_return_date is not None:
                 # Book is being returned
                 self.book.return_book()
+                logger.info(f"Returned book {self.book.id} for borrowing {self.pk}")
 
         super().save(*args, **kwargs)
 
@@ -132,16 +130,18 @@ class Borrowing(models.Model):
         return self.actual_return_date is not None
 
     @property
+    def is_active(self):
+        """Check if borrowing is currently active"""
+        return self.actual_return_date is None
+
+    @property
     def is_overdue(self):
         """Check if borrowing is currently overdue (active borrowings only)."""
-        if self.actual_return_date:
-            return self.was_returned_late
-        expected = (
-            self.expected_return_date.date()
-            if isinstance(self.expected_return_date, datetime)
-            else self.expected_return_date
-        )
-        return timezone.now().astimezone(KYIV_TZ).date() > expected
+        if self.actual_return_date is not None:
+            return False  # Returned books are not "currently overdue"
+
+        expected = normalize_to_date(self.expected_return_date)
+        return kyiv_today() > expected
 
     @property
     def was_returned_late(self):
@@ -149,22 +149,27 @@ class Borrowing(models.Model):
         if not self.actual_return_date:
             return False
 
-        expected = (
-            self.expected_return_date.date()
-            if isinstance(self.expected_return_date, datetime)
-            else self.expected_return_date
-        )
-        actual = (
-            self.actual_return_date.date()
-            if isinstance(self.actual_return_date, datetime)
-            else self.actual_return_date
-        )
+        expected = normalize_to_date(self.expected_return_date)
+        actual = normalize_to_date(self.actual_return_date)
         return actual > expected
 
     @property
     def needs_fine_payment(self):
-        """Check if this borrowing needs a fine payment."""
-        return self.was_returned_late and not self.payments.filter(type="FINE").exists()
+        """
+        Check if this borrowing needs a fine payment.
+        Check for unpaid fines specifically, not just existence.
+        """
+        if not self.was_returned_late:
+            return False
+
+        # Check if there's a paid fine
+        paid_fine = self.payments.filter(type="fine", status="paid").exists()
+        if paid_fine:
+            return False
+
+        # Check if there's a pending fine
+        pending_fine = self.payments.filter(type="fine", status="pending").exists()
+        return not pending_fine
 
     @property
     def borrowing_days(self):
@@ -183,16 +188,8 @@ class Borrowing(models.Model):
             return Decimal("0.00")
 
         fine_multiplier = Decimal(str(getattr(settings, "FINE_MULTIPLIER", 2.0)))
-        expected = (
-            self.expected_return_date.date()
-            if isinstance(self.expected_return_date, datetime)
-            else self.expected_return_date
-        )
-        actual = (
-            self.actual_return_date.date()
-            if isinstance(self.actual_return_date, datetime)
-            else self.actual_return_date
-        )
+        expected = normalize_to_date(self.expected_return_date)
+        actual = normalize_to_date(self.actual_return_date)
 
         days_late = (actual - expected).days
         if days_late <= 0:
@@ -210,38 +207,36 @@ class Borrowing(models.Model):
     @property
     def days_overdue(self):
         """Number of days overdue (0 if returned on time or not overdue)."""
-        expected = (
-            self.expected_return_date.date()
-            if isinstance(self.expected_return_date, datetime)
-            else self.expected_return_date
-        )
+        expected = normalize_to_date(self.expected_return_date)
 
         if self.actual_return_date:
-            actual = (
-                self.actual_return_date.date()
-                if isinstance(self.actual_return_date, datetime)
-                else self.actual_return_date
-            )
+            actual = normalize_to_date(self.actual_return_date)
             return max((actual - expected).days, 0)
 
         # Not returned yet → calculate relative to today
-        if timezone.now().astimezone(KYIV_TZ).date() > expected:
-            return (timezone.now().astimezone(KYIV_TZ).date() - expected).days
+        if kyiv_today() > expected:
+            return (kyiv_today() - expected).days
         return 0
 
+    @transaction.atomic
     def return_book(self, return_date=None):
         """Mark the book as returned with validation"""
         if self.actual_return_date:
             raise ValidationError("Book has already been returned.")
 
-        return_date = return_date or timezone.now().astimezone(KYIV_TZ).date()
+        return_date = return_date or kyiv_today()
 
         # Validate return date
         if return_date < self.borrow_date:
             raise ValidationError("Return date cannot be before borrow date.")
 
-        if return_date > timezone.now().astimezone(KYIV_TZ).date():
+        if return_date > kyiv_today():
             raise ValidationError("Return date cannot be in the future.")
 
         self.actual_return_date = return_date
-        self.save()  # This will trigger inventory updatesave()
+        self.save()  # This will trigger inventory update
+
+        logger.info(
+            f"Borrowing {self.id} returned on {return_date}. "
+            f"Was late: {self.was_returned_late}"
+        )

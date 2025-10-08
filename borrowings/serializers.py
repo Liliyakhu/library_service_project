@@ -1,14 +1,11 @@
-import pytz
-
 from rest_framework import serializers
+from django.conf import settings
+
 from borrowings.models import Borrowing
 from payments.models import Payment
 from books.serializers import BookSerializer
 from payments.serializers import PaymentSerializer
-from django.utils import timezone
-
-
-KYIV_TZ = pytz.timezone("Europe/Kyiv")
+from core.utils.timezone_utils import kyiv_today
 
 
 class BorrowingCreateSerializer(serializers.ModelSerializer):
@@ -29,15 +26,15 @@ class BorrowingCreateSerializer(serializers.ModelSerializer):
 
     def validate_expected_return_date(self, value):
         """Validate expected return date"""
-        today = timezone.now().astimezone(KYIV_TZ).date()
+        today = kyiv_today()
 
         if value <= today:
             raise serializers.ValidationError(
                 "Expected return date must be after today."
             )
 
-        # Optional: limit borrowing period (e.g., max 30 days)
-        max_days = 30
+        # Use configured max days
+        max_days = settings.MAX_BORROWING_DAYS
         if (value - today).days > max_days:
             raise serializers.ValidationError(
                 f"Maximum borrowing period is {max_days} days."
@@ -49,6 +46,32 @@ class BorrowingCreateSerializer(serializers.ModelSerializer):
         """Create a new borrowing with current user attached"""
         user = self.context["request"].user
         return Borrowing.objects.create(user=user, **validated_data)
+
+
+class BorrowingUpdateSerializer(serializers.ModelSerializer):
+    """FIX: Serializer for staff updates - only allow certain fields"""
+
+    class Meta:
+        model = Borrowing
+        fields = ["expected_return_date"]
+
+    def validate_expected_return_date(self, value):
+        """Validate expected return date for updates"""
+        instance = self.instance
+
+        # Must be after borrow_date
+        if value <= instance.borrow_date:
+            raise serializers.ValidationError(
+                "Expected return date must be after borrow date."
+            )
+
+        # Reasonable limit
+        if (value - instance.borrow_date).days > settings.MAX_BORROWING_DAYS:
+            raise serializers.ValidationError(
+                f"Maximum borrowing period is {settings.MAX_BORROWING_DAYS} days."
+            )
+
+        return value
 
 
 class BorrowingDetailSerializer(serializers.ModelSerializer):
@@ -94,20 +117,6 @@ class BorrowingDetailSerializer(serializers.ModelSerializer):
             "needs_fine_payment",
             "payments",
         ]
-
-    # def get_fine_payment(self, obj):
-    #     """Get fine payment for this borrowing if it exists"""
-    #     fine_payment = Payment.objects.filter(borrowing=obj, type="FINE").first()
-    #
-    #     if fine_payment:
-    #         return {
-    #             "id": fine_payment.id,
-    #             "amount": str(fine_payment.money_to_pay),
-    #             "status": fine_payment.status,
-    #             "session_url": fine_payment.session_url,
-    #             "session_id": fine_payment.session_id,
-    #         }
-    #     return None
 
 
 class BorrowingListSerializer(serializers.ModelSerializer):

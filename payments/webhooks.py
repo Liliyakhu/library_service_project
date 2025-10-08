@@ -21,7 +21,9 @@ logger = logging.getLogger(__name__)
 
 KYIV_TZ = pytz.timezone("Europe/Kyiv")
 
-TELEGRAM_API_URL = f"https://api.telegram.org/bot{settings.TELEGRAM_BOT_TOKEN}/sendMessage"
+TELEGRAM_API_URL = (
+    f"https://api.telegram.org/bot{settings.TELEGRAM_BOT_TOKEN}/sendMessage"
+)
 TELEGRAM_CHAT_ID = settings.TELEGRAM_CHAT_ID
 
 
@@ -38,11 +40,10 @@ def notify_telegram(payment: Payment):
             f"💰 Amount: {payment.money_to_pay}\n"
             f"📅 Date: {payment.created_at.strftime('%Y-%m-%d %H:%M:%S')}"
         )
-        requests.post(TELEGRAM_API_URL, data={
-            "chat_id": TELEGRAM_CHAT_ID,
-            "text": message,
-            "parse_mode": "HTML"
-        })
+        requests.post(
+            TELEGRAM_API_URL,
+            data={"chat_id": TELEGRAM_CHAT_ID, "text": message, "parse_mode": "HTML"},
+        )
         logger.info(f"Telegram notification sent for payment {payment.id}")
     except Exception as e:
         logger.error(f"Failed to send Telegram notification: {e}")
