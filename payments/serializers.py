@@ -4,6 +4,7 @@ import pytz
 from rest_framework import serializers
 from rest_framework.fields import DateTimeField
 from django.utils import timezone
+from decimal import Decimal
 
 from payments.models import Payment
 from borrowings.models import Borrowing
@@ -87,35 +88,67 @@ class PaymentCreateSerializer(serializers.ModelSerializer):
     def validate_borrowing(self, value):
         """Validate that borrowing belongs to the requesting user"""
         request = self.context.get("request")
+
         if request and hasattr(request, "user"):
-            # Staff can create payments for any borrowing
-            if not request.user.is_staff:
-                # Regular users can only create payments for their own borrowings
-                if value.user != request.user:
-                    raise serializers.ValidationError(
-                        "You can only create payments for your own borrowings."
-                    )
+            user = request.user
 
-        # Check if borrowing already has a pending or expired payment that could be renewed
-        existing_payments = value.payments.filter(status__in=["pending", "expired"])
-        if existing_payments.exists():
-            # Check if any pending payments are not expired
-            for payment in existing_payments:
-                if payment.status == "pending" and not payment.is_expired:
-                    raise serializers.ValidationError(
-                        "This borrowing already has an active payment session. "
-                        "Please complete the existing payment or wait for it to expire."
-                    )
+            # ✅ Staff can create payments for any borrowing, skip all checks
+            if user.is_staff:
+                return value
 
-            # If we have only expired payments, that's ok - user can create new payment
-            # But we might want to suggest renewal instead
-            if existing_payments.filter(status="expired").exists():
+            # Regular users: only their own borrowings
+            if value.user != user:
                 raise serializers.ValidationError(
-                    "This borrowing has expired payment sessions. "
-                    "Consider renewing an existing payment instead of creating a new one."
+                    "You can only create payments for your own borrowings."
+                )
+
+            # Regular users: can't create new payment if active or expired sessions exist
+            existing_payments = value.payments.filter(status__in=["pending", "expired"])
+            if existing_payments.exists():
+                for payment in existing_payments:
+                    if payment.status == "pending" and not payment.is_expired:
+                        raise serializers.ValidationError(
+                            "This borrowing already has an active payment session. "
+                            "Please complete the existing payment or wait for it to expire."
+                        )
+
+                if existing_payments.filter(status="expired").exists():
+                    raise serializers.ValidationError(
+                        "This borrowing has expired payment sessions. "
+                        "Consider renewing an existing payment instead of creating a new one."
+                    )
+            if value.payment_fee <= 0 and value.fine_fee <= 0:
+                raise serializers.ValidationError(
+                    "The selected borrowing has no outstanding payment or fine fees."
                 )
 
         return value
+
+    # Add the create method to handle object creation and derived fields
+    def create(self, validated_data):
+        """Calculate money_to_pay from borrowing properties and create Payment instance."""
+
+        borrowing_instance = validated_data["borrowing"]
+        payment_type = validated_data.get("type", "payment")
+
+        # 1. Determine the correct amount based on the payment type
+        if payment_type == "payment":
+            # This uses the mocked property (10.00) in the test context
+            calculated_amount = borrowing_instance.payment_fee
+        elif payment_type == "fine":
+            # This uses the mocked property (0.00) in the test context
+            calculated_amount = borrowing_instance.fine_fee
+        else:
+            # Fallback (shouldn't happen with current choices)
+            calculated_amount = Decimal("0.00")
+
+        # 2. Create the Payment object, passing the calculated amount
+        payment = Payment.objects.create(
+            borrowing=borrowing_instance,
+            type=payment_type,
+            money_to_pay=calculated_amount,  # Ensures a positive, calculated value is passed
+        )
+        return payment
 
 
 class PaymentDetailSerializer(serializers.ModelSerializer):
@@ -213,6 +246,8 @@ class PaymentDetailSerializer(serializers.ModelSerializer):
 
     def get_new_session_created_at(self, obj):
         datetime_field = DateTimeField()
+        if not obj.session_expires_at:
+            return None  # or return a default string/date if you prefer
         return datetime_field.to_representation(
             obj.session_expires_at - timedelta(hours=24)
         )
@@ -233,7 +268,8 @@ class PaymentRenewalSerializer(serializers.Serializer):
         # Check permissions
         request = self.context.get("request")
         if request and hasattr(request, "user"):
-            if not request.user.is_staff and payment.borrowing.user != request.user:
+            user = request.user
+            if not user.is_staff and payment.borrowing.user != user:
                 raise serializers.ValidationError(
                     "You can only renew your own payments"
                 )
@@ -244,6 +280,7 @@ class PaymentRenewalSerializer(serializers.Serializer):
                 f"Payment cannot be renewed. Current status: {payment.status}"
             )
 
+        self.context["payment_instance"] = payment
         return value
 
 

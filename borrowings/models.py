@@ -17,7 +17,9 @@ class Borrowing(models.Model):
     actual_return_date = models.DateField(null=True, blank=True)
     book = models.ForeignKey(Book, on_delete=models.CASCADE, related_name="borrowings")
     user = models.ForeignKey(
-        settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="borrowings"
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="borrowings",
     )
 
     class Meta:
@@ -28,18 +30,18 @@ class Borrowing(models.Model):
         constraints = [
             # Expected return date must be after borrow date
             models.CheckConstraint(
-                check=models.Q(expected_return_date__gt=models.F("borrow_date")),
+                condition=models.Q(expected_return_date__gt=models.F("borrow_date")),
                 name="expected_return_after_borrow",
             ),
             # Actual return date must be on or after borrow date (if not null)
             models.CheckConstraint(
-                check=models.Q(actual_return_date__isnull=True)
+                condition=models.Q(actual_return_date__isnull=True)
                 | models.Q(actual_return_date__gte=models.F("borrow_date")),
                 name="actual_return_after_borrow",
             ),
             # Expected return date should not be more than 1 year from borrow date
             models.CheckConstraint(
-                check=models.Q(
+                condition=models.Q(
                     expected_return_date__lte=models.F("borrow_date")
                     + timezone.timedelta(days=365)
                 ),

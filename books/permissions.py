@@ -11,8 +11,4 @@ class IsAdminOrReadOnly(permissions.BasePermission):
 
         if request.method in permissions.SAFE_METHODS:  # GET, HEAD, OPTIONS
             return True
-        # For write operations, require authenticated admin user
-        # result = request.user.is_authenticated and request.user.is_staff
-        # return result
-
         return request.user and request.user.is_authenticated and request.user.is_staff

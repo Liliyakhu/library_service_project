@@ -18,10 +18,10 @@ class Book(models.Model):
         ordering = ["title", "author"]
         constraints = [
             models.CheckConstraint(
-                check=models.Q(inventory__gte=0), name="positive_inventory"
+                condition=models.Q(inventory__gte=0), name="positive_inventory"
             ),
             models.CheckConstraint(
-                check=models.Q(daily_fee__gt=0), name="positive_fee"
+                condition=models.Q(daily_fee__gt=0), name="positive_fee"
             ),
         ]
 

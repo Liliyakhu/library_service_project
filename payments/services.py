@@ -136,7 +136,7 @@ def get_or_create_fine_payment(borrowing, request=None):
         Payment instance or None if borrowing is not overdue
     """
     if not borrowing.was_returned_late:
-        return None
+        raise ValueError("Borrowing is not overdue")
 
     # Try to get existing fine payment (pending or paid)
     existing_fine = Payment.objects.filter(borrowing=borrowing, type="fine").first()

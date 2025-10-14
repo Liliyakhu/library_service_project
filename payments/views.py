@@ -3,6 +3,7 @@ import pytz
 
 from django.db import models
 from django.utils import timezone
+from datetime import timedelta
 from rest_framework import viewsets, status, permissions
 from rest_framework.decorators import action
 from rest_framework.response import Response
@@ -20,6 +21,7 @@ from payments.permissions import IsOwnerOrStaffForPayments
 from payments.services import get_or_create_fine_payment
 from payments.stripe_service import StripeService
 from users.authentication import AuthorizeHeaderJWTAuthentication
+from core.utils.timezone_utils import kyiv_now
 
 logger = logging.getLogger(__name__)
 
@@ -317,7 +319,9 @@ class PaymentViewSet(viewsets.ModelViewSet):
 
             borrowing = Borrowing.objects.get(id=borrowing_id)
 
-            if not borrowing.is_overdue:
+            # ✅ FIX: Check was_returned_late instead of is_overdue
+            if not borrowing.was_returned_late:
+                # if not borrowing.is_overdue:
                 return Response(
                     {"error": "Borrowing is not overdue"},
                     status=status.HTTP_400_BAD_REQUEST,
@@ -346,13 +350,26 @@ class PaymentViewSet(viewsets.ModelViewSet):
         """
         payment = self.get_object()
 
-        # Check if payment can be renewed
         if not payment.is_renewable:
+            # Better error message
+            if payment.status == "paid":
+                reason = "Payment is already paid"
+            elif (
+                payment.status == "pending"
+                and payment.session_id
+                and not payment.is_expired
+            ):
+                reason = "Payment has an active session"
+            else:
+                reason = f"Payment status is '{payment.status}'"
+
             return Response(
                 {
                     "error": "Payment cannot be renewed",
-                    "reason": f"Payment status is '{payment.status}'. Only 'pending' or 'expired' payments can be renewed.",
+                    "reason": reason,
                     "current_status": payment.status,
+                    "has_session": bool(payment.session_id),
+                    "is_expired": payment.is_expired,
                 },
                 status=status.HTTP_400_BAD_REQUEST,
             )
@@ -360,25 +377,39 @@ class PaymentViewSet(viewsets.ModelViewSet):
         # Renew the session using StripeService
         renewal_result = StripeService.renew_checkout_session(payment, request)
 
-        if renewal_result["success"]:
+        if renewal_result.get("success"):
+            # 🔧 Update the payment record
+            payment.session_id = renewal_result.get("session_id")
+            payment.session_url = renewal_result.get("session_url")
+            payment.status = "pending"
+            payment.session_expires_at = kyiv_now() + timedelta(
+                hours=24
+            )  # adjust duration if needed
+            payment.save(
+                update_fields=[
+                    "session_id",
+                    "session_url",
+                    "status",
+                    "session_expires_at",
+                ]
+            )
+
             # Return updated payment details
             response_serializer = PaymentDetailSerializer(payment)
             return Response(
                 {
                     "message": "Payment session renewed successfully",
                     "payment": response_serializer.data,
-                    # "new_session_url": renewal_result["session_url"],
-                    # "expires_in_hours": 24,
                 },
                 status=status.HTTP_200_OK,
             )
-        else:
-            return Response(
-                {
-                    "error": f'Failed to renew payment session: {renewal_result.get("error", "Unknown error")}'
-                },
-                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            )
+
+        return Response(
+            {
+                "error": f'Failed to renew payment session: {renewal_result.get("error", "Unknown error")}'
+            },
+            status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        )
 
     @action(detail=True, methods=["get"])
     def session_status(self, request, pk=None):

@@ -50,7 +50,7 @@ class Payment(models.Model):
         constraints = [
             # Ensure money_to_pay is positive
             models.CheckConstraint(
-                check=models.Q(money_to_pay__gt=0), name="positive_money_to_pay"
+                condition=models.Q(money_to_pay__gt=0), name="positive_money_to_pay"
             ),
             # Unique session_id when not null
             models.UniqueConstraint(
@@ -130,9 +130,12 @@ class Payment(models.Model):
             return False
         if self.status == "expired":
             return True
-        # Pending but session expired
-        if self.status == "pending" and self.is_expired:
-            return True
+        # Pending with expired OR missing session
+        if self.status == "pending":
+            if self.session_id is None:  # No session created yet
+                return True
+            if self.is_expired:  # Session expired
+                return True
         return False
 
     @property

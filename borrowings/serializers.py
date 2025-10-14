@@ -124,7 +124,7 @@ class BorrowingListSerializer(serializers.ModelSerializer):
 
     book_title = serializers.CharField(source="book.title", read_only=True)
     book_author = serializers.CharField(source="book.author", read_only=True)
-    user_full_name = serializers.CharField(source="user.full_name", read_only=True)
+    # user_full_name = serializers.CharField(source="user.full_name", read_only=True)
     is_returned = serializers.BooleanField(read_only=True)
     is_overdue = serializers.BooleanField(read_only=True)
 
@@ -137,7 +137,7 @@ class BorrowingListSerializer(serializers.ModelSerializer):
             "actual_return_date",
             "book_title",
             "book_author",
-            "user_full_name",
+            # "user_full_name",
             "is_returned",
             "is_overdue",
         ]
