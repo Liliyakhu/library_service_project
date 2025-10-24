@@ -1,9 +1,11 @@
 import logging
 from rest_framework import viewsets, status
+from drf_spectacular.utils import extend_schema, OpenApiParameter
 from rest_framework.decorators import action
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from django.db import transaction, IntegrityError
+from django.db.models import Q, Count, Exists, OuterRef, Prefetch
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.utils.html import escape
 from rest_framework.exceptions import ValidationError
@@ -33,11 +35,33 @@ class BorrowingViewSet(viewsets.ModelViewSet):
 
     def get_queryset(self):
         """Optimized queryset with proper joins"""
-        queryset = Borrowing.objects.select_related("book", "user")
+        base_qs = Borrowing.objects.select_related("book", "user")
+
+        # Annotate once
+        base_qs = base_qs.annotate(
+            has_paid_fine=Exists(
+                Payment.objects.filter(
+                    borrowing=OuterRef("pk"), type="fine", status="paid"
+                )
+            ),
+            has_pending_fine=Exists(
+                Payment.objects.filter(
+                    borrowing=OuterRef("pk"), type="fine", status="pending"
+                )
+            ),
+        )
+
+        # Prefetch payments (single prefetch)
+        payments_qs = Payment.objects.select_related(
+            "borrowing__book", "borrowing__user"
+        ).order_by("created_at")
+
+        queryset = base_qs.prefetch_related(Prefetch("payments", queryset=payments_qs))
 
         # User filtering
-        if not self.request.user.is_staff:
-            queryset = queryset.filter(user=self.request.user)
+        user = self.request.user
+        if not user.is_staff:
+            queryset = queryset.filter(user=user)
         else:
             user_id = self.request.query_params.get("user_id")
             if user_id:
@@ -374,3 +398,86 @@ class BorrowingViewSet(viewsets.ModelViewSet):
                 },
             }
         )
+
+    @extend_schema(
+        parameters=[
+            OpenApiParameter(
+                "user_id",
+                type=int,
+                description="Filter by user id. Only for staff (ex. ?user_id=1)",
+            ),
+            OpenApiParameter(
+                "is_active",
+                type=bool,
+                description="Filter by active and nonactive borrowings (ex. ?is_active=True)",
+            ),
+        ]
+    )
+    def list(self, request, *args, **kwargs):
+        """Get list of borrowings"""
+        return super().list(request, args, **kwargs)
+
+    # def list(self, request, *args, **kwargs):
+    #     from django.db import reset_queries, connection
+    #
+    #     reset_queries()
+    #
+    #     print("\n" + "=" * 80)
+    #     print("STARTING BORROWING LIST REQUEST")
+    #     print("=" * 80)
+    #
+    #     response = super().list(request, *args, **kwargs)
+    #
+    #     print("\n" + "=" * 80)
+    #     print(f"TOTAL QUERIES: {len(connection.queries)}")
+    #     print("=" * 80)
+    #
+    #     for i, query in enumerate(connection.queries, 1):
+    #         sql = query['sql']
+    #         print(f"\nQuery {i} [{query['time']}s]:")
+    #         print(sql[:4000])
+    #
+    #         # ✅ Better detection - check for WHERE with single ID (N+1 pattern)
+    #         if 'users_user' in sql and 'WHERE "users_user"."id" =' in sql:
+    #             print("⚠️  INDIVIDUAL USER QUERY - N+1 DETECTED")
+    #         if 'books_book' in sql and 'WHERE "books_book"."id" =' in sql:
+    #             print("⚠️  INDIVIDUAL BOOK QUERY - N+1 DETECTED")
+    #         if 'payments_payment' in sql and 'WHERE "payments_payment"."borrowing_id" =' in sql:
+    #             print("⚠️  INDIVIDUAL PAYMENT QUERY - N+1 DETECTED")
+    #
+    #     print("\n" + "=" * 80)
+    #
+    #     return response
+    #
+    # def retrieve(self, request, *args, **kwargs):
+    #     """Debug retrieve to see query count"""
+    #     from django.db import reset_queries, connection
+    #
+    #     reset_queries()
+    #
+    #     print("\n" + "=" * 80)
+    #     print("STARTING BORROWING RETRIEVE")
+    #     print("=" * 80)
+    #
+    #     response = super().retrieve(request, *args, **kwargs)
+    #
+    #     print("\n" + "=" * 80)
+    #     print(f"TOTAL QUERIES: {len(connection.queries)}")
+    #     print("=" * 80)
+    #
+    #     for i, query in enumerate(connection.queries, 1):
+    #         sql = query['sql']
+    #         print(f"\nQuery {i} [{query['time']}s]:")
+    #         print(sql[:500])
+    #
+    #         # Detect N+1 patterns for borrowing detail
+    #         if 'payments_payment' in sql and 'WHERE "payments_payment"."id" =' in sql:
+    #             print("⚠️  INDIVIDUAL PAYMENT QUERY - N+1 DETECTED")
+    #         if 'books_book' in sql and 'WHERE "books_book"."id" =' in sql:
+    #             print("⚠️  INDIVIDUAL BOOK QUERY - N+1 DETECTED")
+    #         if 'users_user' in sql and 'WHERE "users_user"."id" =' in sql:
+    #             print("⚠️  INDIVIDUAL USER QUERY - N+1 DETECTED")
+    #
+    #     print("\n" + "=" * 80)
+    #
+    #     return response

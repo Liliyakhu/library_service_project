@@ -1,17 +1,25 @@
 import logging
 import pytz
 
+from django.db import connection
+from django.db.models.signals import post_init
+import traceback
 from django.db import models
+from django.db.models import Prefetch
 from django.utils import timezone
 from datetime import timedelta
+
+from drf_spectacular.utils import extend_schema, OpenApiParameter
 from rest_framework import viewsets, status, permissions
 from rest_framework.decorators import action
+from rest_framework.renderers import JSONRenderer
 from rest_framework.response import Response
 from rest_framework.decorators import api_view
 from django.db import transaction
 from django.shortcuts import get_object_or_404
 
-from payments.models import Payment
+from books.models import Book
+from payments.models import Payment, Borrowing
 from payments.serializers import (
     PaymentSerializer,
     PaymentCreateSerializer,
@@ -22,6 +30,7 @@ from payments.services import get_or_create_fine_payment
 from payments.stripe_service import StripeService
 from users.authentication import AuthorizeHeaderJWTAuthentication
 from core.utils.timezone_utils import kyiv_now
+from users.models import User
 
 logger = logging.getLogger(__name__)
 
@@ -34,28 +43,26 @@ class PaymentViewSet(viewsets.ModelViewSet):
 
     authentication_classes = [AuthorizeHeaderJWTAuthentication]
     permission_classes = [permissions.IsAuthenticated, IsOwnerOrStaffForPayments]
+    # renderer_classes = [JSONRenderer]
 
     def get_queryset(self):
         """Filter payments based on user permissions"""
         user = self.request.user
 
-        if user.is_staff:
-            # Staff can see all payments
-            queryset = Payment.objects.select_related(
-                "borrowing__book", "borrowing__user"
-            ).all()
-        else:
-            # Regular users can only see their own payments
-            queryset = Payment.objects.select_related(
-                "borrowing__book", "borrowing__user"
-            ).filter(borrowing__user=user)
+        queryset = Payment.objects.select_related(
+            "borrowing__book",
+            "borrowing__user",
+        ).order_by("-created_at")
+
+        if not user.is_staff:
+            queryset = queryset.filter(borrowing__user=user)
 
         # Optional filtering by status
         status_filter = self.request.query_params.get("status")
-        if status_filter in ["pending", "paid"]:
+        if status_filter in ["pending", "paid", "expired"]:
             queryset = queryset.filter(status=status_filter)
 
-        return queryset.order_by("-created_at")
+        return queryset
 
     def get_serializer_class(self):
         """Return appropriate serializer based on action"""
@@ -702,6 +709,121 @@ class PaymentViewSet(viewsets.ModelViewSet):
                 {"error": "Payment not found"},
                 status=status.HTTP_404_NOT_FOUND,
             )
+
+    @extend_schema(
+        parameters=[
+            OpenApiParameter(
+                "status",
+                type=str,
+                description="Filter by status: pending, paid, expired (ex. ?status=paid)",
+            )
+        ]
+    )
+    def list(self, request, *args, **kwargs):
+        """Get list of payments"""
+        return super().list(request, args, **kwargs)
+
+    # def list(self, request, *args, **kwargs):
+    #     from django.db import reset_queries, connection
+    #
+    #     # before = len(connection.queries)
+    #     # response = super().list(request, *args, **kwargs)
+    #     # after = len(connection.queries)
+    #     # print("QUERIES EXECUTED:", after - before)
+    #
+    #     reset_queries()
+    #
+    #     print("\n" + "=" * 80)
+    #     print("STARTING LIST REQUEST")
+    #     print("=" * 80)
+    #
+    #     response = super().list(request, *args, **kwargs)
+    #
+    #     print("\n" + "=" * 80)
+    #     print(f"TOTAL QUERIES: {len(connection.queries)}")
+    #     print("=" * 80)
+    #
+    #     for i, query in enumerate(connection.queries, 1):
+    #         sql = query['sql']
+    #         print(f"\nQuery {i} [{query['time']}s]:")
+    #         print(sql[:4000])
+    #
+    #         # ✅ Better detection - check for WHERE with single ID (N+1 pattern)
+    #         if 'users_user' in sql and 'WHERE "users_user"."id" =' in sql:
+    #             print("⚠️  INDIVIDUAL USER QUERY - N+1 DETECTED")
+    #         if 'books_book' in sql and 'WHERE "books_book"."id" =' in sql:
+    #             print("⚠️  INDIVIDUAL BOOK QUERY - N+1 DETECTED")
+    #         if 'borrowings_borrowing' in sql and 'LIMIT 1000' in sql and 'payments_payment' not in sql:
+    #             print("⚠️  MYSTERY BORROWING QUERY")
+    #
+    #         # Find the mystery borrowing query
+    #         if 'borrowings_borrowing' in sql and 'LIMIT 1000' in sql and 'payments_payment' not in sql:
+    #             print("\n⚠️⚠️⚠️ MYSTERY BORROWING QUERY FOUND ⚠️⚠️⚠️")
+    #             print("This query shouldn't be here!")
+    #             # Print stack trace from query
+    #             if 'stack' in query:
+    #                 print("\nStack trace:")
+    #                 print(query['stack'])
+    #
+    #     print("\n" + "=" * 80)
+    #
+    #     return response
+
+    # def list(self, request, *args, **kwargs):
+    #     from django.db import reset_queries, connection
+    #
+    #     reset_queries()
+    #
+    #     # Add breakpoint before serialization
+    #     queryset = self.filter_queryset(self.get_queryset())
+    #     print(f"Queryset evaluated: {len(connection.queries)} queries")
+    #
+    #     page = self.paginate_queryset(queryset)
+    #     print(f"After pagination: {len(connection.queries)} queries")
+    #
+    #     serializer = self.get_serializer(page, many=True)
+    #     print(f"After serializer init: {len(connection.queries)} queries")
+    #
+    #     data = serializer.data
+    #     print(f"After serializer.data: {len(connection.queries)} queries")
+    #
+    #     response = self.get_paginated_response(data)
+    #     print(f"After response: {len(connection.queries)} queries")
+    #
+    #     print("\n=== QUERIES ===")
+    #     for i, q in enumerate(connection.queries, 1):
+    #         print(f"{i}. {q['sql'][:200]}")
+    #
+    #     return response
+    #
+    # def retrieve(self, request, *args, **kwargs):
+    #     """Debug retrieve to see query count"""
+    #     from django.db import reset_queries, connection
+    #
+    #     reset_queries()
+    #
+    #     print("\n" + "=" * 80)
+    #     print("STARTING PAYMENT RETRIEVE")
+    #     print("=" * 80)
+    #
+    #     response = super().retrieve(request, *args, **kwargs)
+    #
+    #     print("\n" + "=" * 80)
+    #     print(f"TOTAL QUERIES: {len(connection.queries)}")
+    #     print("=" * 80)
+    #
+    #     for i, query in enumerate(connection.queries, 1):
+    #         sql = query['sql']
+    #         print(f"\nQuery {i} [{query['time']}s]:")
+    #         print(sql[:500])
+    #
+    #         # Detect N+1 patterns
+    #         if 'payments_payment' in sql and 'WHERE "payments_payment"."id" =' in sql:
+    #             print("⚠️  INDIVIDUAL PAYMENT QUERY - N+1 DETECTED")
+    #
+    #     print("\n" + "=" * 80)
+    #
+    #     return response
 
 
 @api_view(["GET"])

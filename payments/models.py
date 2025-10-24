@@ -141,11 +141,15 @@ class Payment(models.Model):
     @property
     def borrower_email(self):
         """Get borrower's email for convenience"""
+        if hasattr(self, "_borrowing_cache"):
+            return self._borrowing_cache.user.email
         return self.borrowing.user.email
 
     @property
     def book_title(self):
         """Get book title for convenience"""
+        if hasattr(self, "_borrowing_cache"):
+            return self._borrowing_cache.book.title
         return self.borrowing.book.title
 
     def expire_session(self):

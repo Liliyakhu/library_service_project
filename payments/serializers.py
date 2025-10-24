@@ -15,12 +15,10 @@ KYIV_TZ = pytz.timezone("Europe/Kyiv")
 class PaymentSerializer(serializers.ModelSerializer):
     """Serializer for Payment model"""
 
-    # Related fields for better readability
-    borrowing_id = serializers.IntegerField(source="borrowing.id", read_only=True)
-    book_title = serializers.CharField(source="borrowing.book.title", read_only=True)
-    user_email = serializers.CharField(source="borrowing.user.email", read_only=True)
+    borrowing_id = serializers.IntegerField(read_only=True)
+    book_title = serializers.CharField(read_only=True)
+    user_email = serializers.CharField(read_only=True)
 
-    # New fields for session expiration handling
     is_expired = serializers.ReadOnlyField()
     is_renewable = serializers.ReadOnlyField()
     time_until_expiry = serializers.SerializerMethodField()
@@ -43,17 +41,25 @@ class PaymentSerializer(serializers.ModelSerializer):
             "is_renewable",
             "time_until_expiry",
         ]
-        read_only_fields = [
-            "id",
-            "session_url",
-            "session_id",
-            "money_to_pay",
-            "created_at",
-            "borrowing_id",
-            "book_title",
-            "user_email",
-            "session_expires_at",
-        ]
+
+    def to_representation(self, instance):
+        """Build representation using cached relations"""
+        return {
+            "id": instance.id,
+            "status": instance.status,
+            "type": instance.type,
+            "borrowing_id": instance.borrowing_id,  # Direct FK access
+            "book_title": instance.borrowing.book.title,
+            "user_email": instance.borrowing.user.email,
+            "session_url": instance.session_url,
+            "session_id": instance.session_id,
+            "money_to_pay": str(instance.money_to_pay),
+            "created_at": instance.created_at,
+            "session_expires_at": instance.session_expires_at,
+            "is_expired": instance.is_expired,
+            "is_renewable": instance.is_renewable,
+            "time_until_expiry": self.get_time_until_expiry(instance),
+        }
 
     def get_time_until_expiry(self, obj):
         """Calculate time until session expiry"""

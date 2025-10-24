@@ -63,15 +63,17 @@ INSTALLED_APPS = [
     "django.contrib.sessions",
     "django.contrib.messages",
     "django.contrib.staticfiles",
-    "debug_toolbar",
-    "rest_framework",
-    "rest_framework_simplejwt",
-    "django_celery_beat",
     "books",
     "users",
     "borrowings",
     "notifications",
     "payments",
+    "debug_toolbar",
+    "rest_framework",
+    "rest_framework_simplejwt",
+    "django_celery_beat",
+    "drf_spectacular",
+    "drf_spectacular_sidecar",
 ]
 
 MIDDLEWARE = [
@@ -180,6 +182,7 @@ REST_FRAMEWORK = {
         "anon": "100/hour",
         "user": "1000/hour",
     },
+    "DEFAULT_SCHEMA_CLASS": "drf_spectacular.openapi.AutoSchema",
 }
 
 SIMPLE_JWT = {
@@ -187,6 +190,33 @@ SIMPLE_JWT = {
     "REFRESH_TOKEN_LIFETIME": timedelta(days=1),
     "ROTATE_REFRESH_TOKENS": False,
 }
+
+SPECTACULAR_SETTINGS = {
+    "TITLE": "Library Service API",
+    "DESCRIPTION": "Online management system for book borrowings",
+    "VERSION": "1.0.0",
+    "SERVE_INCLUDE_SCHEMA": False,
+    "COMPONENT_SPLIT_REQUEST": True,
+    "SWAGGER_UI_SETTINGS": {
+        "deepLinking": True,
+        "defaultModelRendering": "model",
+        "defaultModelsExpandDepth": 2,
+        "defaultModelExpandDepth": 2,
+    },
+    "SECURITY": [{"Authorize": []}],
+    # "SECURITY_SCHEMES": {
+    #     "Authorize": {
+    #         "type": "apiKey",
+    #         "in": "header",
+    #         "name": "Authorize",  # your custom header name
+    #         "description": (
+    #             'Paste your JWT access token here (without "Bearer").\n\n'
+    #             "Example:\n\n    Authorize: <your_access_token>"
+    #         ),
+    #     },
+    # },
+}
+
 
 # Celery Configuration
 CELERY_BROKER_URL = os.environ.get("CELERY_BROKER_URL", "redis://localhost:6379/0")

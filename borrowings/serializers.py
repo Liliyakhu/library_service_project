@@ -94,7 +94,7 @@ class BorrowingDetailSerializer(serializers.ModelSerializer):
         max_digits=8, decimal_places=2, read_only=True
     )
     was_returned_late = serializers.BooleanField(read_only=True)
-    needs_fine_payment = serializers.BooleanField(read_only=True)
+    needs_fine_payment = serializers.SerializerMethodField()
     payments = PaymentSerializer(many=True, read_only=True)
 
     class Meta:
@@ -117,6 +117,21 @@ class BorrowingDetailSerializer(serializers.ModelSerializer):
             "needs_fine_payment",
             "payments",
         ]
+
+    def get_needs_fine_payment(self, obj):
+        """Use annotated values to avoid extra queries"""
+        if not obj.was_returned_late:
+            return False
+
+        # Use annotated values (no query)
+        if obj.has_paid_fine:
+            return False
+
+        if hasattr(obj, "has_pending_fine"):
+            return not obj.has_pending_fine
+
+        # Fallback (shouldn't happen with proper prefetch)
+        return not obj.has_paid_fine
 
 
 class BorrowingListSerializer(serializers.ModelSerializer):
