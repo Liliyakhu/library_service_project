@@ -4,12 +4,13 @@ from rest_framework import viewsets
 from books.models import Book
 from books.serializers import BookSerializer
 from books.permissions import IsAdminOrReadOnly
+from rest_framework.authentication import TokenAuthentication  # or SessionAuthentication
 
 
 class BookViewSet(viewsets.ModelViewSet):
     queryset = Book.objects.all()
     serializer_class = BookSerializer
-    authentication_classes = []
+    # authentication_classes = [TokenAuthentication]
     permission_classes = [IsAdminOrReadOnly]
 
     def get_queryset(self):
@@ -22,6 +23,10 @@ class BookViewSet(viewsets.ModelViewSet):
             queryset = queryset.filter(title__icontains=title)
 
         return queryset.order_by("title")
+
+    # def perform_create(self, serializer):
+    #     """Automatically set the staff member who creates the book"""
+    #     serializer.save(staff=self.request.user)
 
     @extend_schema(
         parameters=[

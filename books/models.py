@@ -23,6 +23,10 @@ class Book(models.Model):
             models.CheckConstraint(
                 condition=models.Q(daily_fee__gt=0), name="positive_fee"
             ),
+            models.UniqueConstraint(
+                fields=["title", "author", "cover"],
+                name="unique_book"
+            ),
         ]
 
     def __str__(self):
