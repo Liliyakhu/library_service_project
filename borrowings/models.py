@@ -6,7 +6,7 @@ from django.core.exceptions import ValidationError
 from decimal import Decimal
 
 from books.models import Book
-from core.utils.timezone_utils import KYIV_TZ, kyiv_today, normalize_to_date
+from core.utils.timezone_utils import kyiv_today, normalize_to_date
 
 logger = logging.getLogger(__name__)
 
@@ -126,6 +126,8 @@ class Borrowing(models.Model):
     def __str__(self):
         return f"{self.user.full_name} borrowed {self.book.title} on {self.borrow_date}, id = {self.id}"
 
+    # ==================== Status Properties ====================
+
     @property
     def is_returned(self):
         """Check if the book has been returned"""
@@ -164,47 +166,16 @@ class Borrowing(models.Model):
         if not self.was_returned_late:
             return False
 
-        # Check if there's a paid fine
-        paid_fine = self.payments.filter(type="fine", status="paid").exists()
-        if paid_fine:
-            return False
+        # If ANY fine exists (paid or pending), no need for new one
+        has_any_fine = self.payments.filter(type="fine").exists()
+        return not has_any_fine
 
-        # Check if there's a pending fine
-        pending_fine = self.payments.filter(type="fine", status="pending").exists()
-        return not pending_fine
+    # ==================== Duration Properties ====================
 
     @property
     def borrowing_days(self):
         """Planned borrowing duration (without overdue days)."""
         return (self.expected_return_date - self.borrow_date).days
-
-    @property
-    def payment_fee(self):
-        """Base borrowing fee (without fine)."""
-        return (self.book.daily_fee * self.borrowing_days).quantize(Decimal("0.01"))
-
-    @property
-    def fine_fee(self):
-        """Calculate fine amount for late return."""
-        if not self.was_returned_late:
-            return Decimal("0.00")
-
-        fine_multiplier = Decimal(str(getattr(settings, "FINE_MULTIPLIER", 2.0)))
-        expected = normalize_to_date(self.expected_return_date)
-        actual = normalize_to_date(self.actual_return_date)
-
-        days_late = (actual - expected).days
-        if days_late <= 0:
-            return Decimal("0.00")
-
-        daily_fee = self.book.daily_fee
-        fine_amount = days_late * daily_fee * fine_multiplier
-        return fine_amount.quantize(Decimal("0.01"))
-
-    @property
-    def total_amount_due(self):
-        """Total amount including normal fee and fine if overdue."""
-        return (self.payment_fee + self.fine_fee).quantize(Decimal("0.01"))
 
     @property
     def days_overdue(self):
@@ -219,6 +190,37 @@ class Borrowing(models.Model):
         if kyiv_today() > expected:
             return (kyiv_today() - expected).days
         return 0
+
+    # ==================== Financial Properties ====================
+
+    @property
+    def payment_fee(self):
+        """Base borrowing fee (without fine)."""
+        return (self.book.daily_fee * self.borrowing_days).quantize(Decimal("0.01"))
+
+    @property
+    def fine_fee(self):
+        """Calculate fine amount for late return."""
+        if not self.was_returned_late:
+            return Decimal("0.00")
+
+        fine_multiplier = Decimal(str(settings.FINE_MULTIPLIER))
+        expected = normalize_to_date(self.expected_return_date)
+        actual = normalize_to_date(self.actual_return_date)
+
+        days_late = (actual - expected).days
+        if days_late <= 0:
+            return Decimal("0.00")
+
+        fine_amount = days_late * self.book.daily_fee * fine_multiplier
+        return fine_amount.quantize(Decimal("0.01"))
+
+    @property
+    def total_amount_due(self):
+        """Total amount including normal fee and fine if overdue."""
+        return (self.payment_fee + self.fine_fee).quantize(Decimal("0.01"))
+
+    # ==================== Action Methods ====================
 
     @transaction.atomic
     def return_book(self, return_date=None):

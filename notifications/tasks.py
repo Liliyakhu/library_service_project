@@ -1,17 +1,21 @@
 import logging
 from celery import shared_task
-from django.utils.html import escape
 from django.core.paginator import Paginator
 
 from borrowings.models import Borrowing
 from notifications.telegram import send_telegram_message_with_retry
+from notifications.formatters import (
+    format_overdue_borrowing_alert,
+    format_no_overdue_notification,
+    format_overdue_summary,
+)
 from core.utils.timezone_utils import kyiv_now, kyiv_today
-
 
 logger = logging.getLogger(__name__)
 
 # Pagination settings
 BATCH_SIZE = 50  # Process borrowings in batches
+MAX_FAILED_IDS_TO_SHOW = 10  # Limit failed IDs in summary message
 
 
 @shared_task(bind=True, max_retries=3, default_retry_delay=60)
@@ -20,9 +24,9 @@ def check_overdue_borrowings(self):
     Celery task to check for overdue borrowings and send Telegram notifications.
 
     This task:
-    1. Filters borrowings that are overdue (expected_return_date <= today and not returned)
+    1. Filters borrowings that are overdue
     2. Sends a detailed Telegram notification for each overdue borrowing
-    3. Sends a summary message if no overdue borrowings are found
+    3. Sends a summary message
 
     Uses pagination to avoid loading all records into memory.
     Processes borrowings in batches for better performance.
@@ -35,13 +39,14 @@ def check_overdue_borrowings(self):
     """
     try:
         today = kyiv_today()
+        checked_at = kyiv_now()
 
         # Get overdue borrowings
         overdue_borrowings = (
             Borrowing.objects.select_related("book", "user")
             .filter(
                 expected_return_date__lte=today,
-                actual_return_date__isnull=True,  # Not returned yet
+                actual_return_date__isnull=True,
             )
             .order_by("expected_return_date", "user__email")
         )
@@ -54,19 +59,12 @@ def check_overdue_borrowings(self):
         )
 
         if overdue_count == 0:
-            # No overdue borrowings
-            message = (
-                "🎉 <b>No Overdue Borrowings Today!</b>\n"
-                f"📅 <b>Date</b>: {today:%Y-%m-%d}\n"
-                f"🕘 <b>Checked at</b>: {kyiv_now():%H:%M (Kyiv time)}\n"
-                "✅ All borrowings are up to date!"
-            )
+            message = format_no_overdue_notification(today, checked_at)
 
             if not send_telegram_message_with_retry(message):
                 logger.warning(
                     f"Task {self.request.id}: Failed to send 'no overdue' notification"
                 )
-                # Retry the task if Telegram notification fails
                 raise self.retry(countdown=60)
 
             logger.info(
@@ -80,7 +78,7 @@ def check_overdue_borrowings(self):
                 "overdue_count": 0,
                 "message": "No overdue borrowings found",
                 "date": today.isoformat(),
-                "timestamp": kyiv_now().isoformat(),
+                "timestamp": checked_at.isoformat(),
             }
 
         # Process in batches
@@ -97,23 +95,7 @@ def check_overdue_borrowings(self):
 
             for borrowing in page.object_list:
                 try:
-                    days_overdue = (today - borrowing.expected_return_date).days
-
-                    message = (
-                        "⚠️ <b>OVERDUE BORROWING ALERT</b>\n"
-                        f"📚 <b>Book</b>: {escape(borrowing.book.title)}\n"
-                        f"✍️ <b>Author</b>: {escape(borrowing.book.author)}\n"
-                        f"👤 <b>Borrower</b>: {escape(borrowing.user.full_name)}\n"
-                        f"📧 <b>Email</b>: {escape(borrowing.user.email)}\n"
-                        f"📅 <b>Borrowed</b>: {borrowing.borrow_date:%Y-%m-%d}\n"
-                        f"🗓️ <b>Due Date</b>: {borrowing.expected_return_date:%Y-%m-%d}\n"
-                        f"⏰ <b>Days Overdue</b>: {days_overdue} day{'s' if days_overdue != 1 else ''}\n"
-                        f"💰 <b>Daily Fee</b>: ${borrowing.book.daily_fee}\n"
-                        f"🧾 <b>Borrowing ID</b>: {borrowing.id}\n"
-                        f"💸 <b>Current Total Fee</b>: ${borrowing.total_amount_due}\n"
-                        f"🕘 <b>Alert Time</b>: {kyiv_now():%H:%M (Kyiv time)}"
-                    )
-
+                    message = format_overdue_borrowing_alert(borrowing)
                     success = send_telegram_message_with_retry(message, max_retries=2)
 
                     if success:
@@ -135,24 +117,23 @@ def check_overdue_borrowings(self):
                         f"Task {self.request.id}: Error processing borrowing {borrowing.id}: {str(e)}"
                     )
 
-            # Send summary message
-        summary_message = (
-            f"📊 <b>Daily Overdue Report</b>\n"
-            f"📅 <b>Date</b>: {today:%Y-%m-%d}\n"
-            f"🕘 <b>Report Time</b>: {kyiv_now():%H:%M (Kyiv time)}\n"
-            f"⚠️ <b>Total Overdue</b>: {overdue_count}\n"
-            f"✅ <b>Notifications Sent</b>: {successful_notifications}\n"
-            f"❌ <b>Failed Notifications</b>: {failed_notifications}"
+        # Send summary message
+        summary_message = format_overdue_summary(
+            today,
+            checked_at,
+            overdue_count,
+            successful_notifications,
+            failed_notifications,
         )
 
+        # Add failed IDs if any
         if failed_borrowing_ids:
-            # Limit failed IDs in message to avoid message size limits
-            if len(failed_borrowing_ids) <= 10:
+            if len(failed_borrowing_ids) <= MAX_FAILED_IDS_TO_SHOW:
                 summary_message += f"\n🚫 <b>Failed IDs</b>: {', '.join(map(str, failed_borrowing_ids))}"
             else:
                 summary_message += (
-                    f"\n🚫 <b>Failed IDs</b>: {', '.join(map(str, failed_borrowing_ids[:10]))} "
-                    f"(and {len(failed_borrowing_ids) - 10} more)"
+                    f"\n🚫 <b>Failed IDs</b>: {', '.join(map(str, failed_borrowing_ids[:MAX_FAILED_IDS_TO_SHOW]))} "
+                    f"(and {len(failed_borrowing_ids) - MAX_FAILED_IDS_TO_SHOW} more)"
                 )
 
         send_telegram_message_with_retry(summary_message)
@@ -177,7 +158,7 @@ def check_overdue_borrowings(self):
             "failed_notifications": failed_notifications,
             "failed_borrowing_ids": failed_borrowing_ids[:100],  # Limit return size
             "date": today.isoformat(),
-            "timestamp": kyiv_now().isoformat(),
+            "timestamp": checked_at.isoformat(),
         }
 
     except Exception as exc:
@@ -220,23 +201,7 @@ def send_overdue_notification(borrowing_id):
                 "reason": "Not overdue yet",
             }
 
-        days_overdue = (today - borrowing.expected_return_date).days
-
-        message = (
-            "⚠️ <b>OVERDUE BORROWING ALERT</b>\n"
-            f"📚 <b>Book</b>: {escape(borrowing.book.title)}\n"
-            f"✍️ <b>Author</b>: {escape(borrowing.book.author)}\n"
-            f"👤 <b>Borrower</b>: {escape(borrowing.user.full_name)}\n"
-            f"📧 <b>Email</b>: {escape(borrowing.user.email)}\n"
-            f"📅 <b>Borrowed</b>: {borrowing.borrow_date:%Y-%m-%d}\n"
-            f"🗓️ <b>Due Date</b>: {borrowing.expected_return_date:%Y-%m-%d}\n"
-            f"⏰ <b>Days Overdue</b>: {days_overdue} day{'s' if days_overdue != 1 else ''}\n"
-            f"💰 <b>Daily Fee</b>: ${borrowing.book.daily_fee}\n"
-            f"🧾 <b>Borrowing ID</b>: {borrowing.id}\n"
-            f"💸 <b>Current Total Fee</b>: ${borrowing.total_amount_due}\n"
-            f"🕘 <b>Alert Time</b>: {kyiv_now():%H:%M (Kyiv time)}"
-        )
-
+        message = format_overdue_borrowing_alert(borrowing)
         success = send_telegram_message_with_retry(message)
 
         return {

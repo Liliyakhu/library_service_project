@@ -1,17 +1,22 @@
 from drf_spectacular.utils import extend_schema, OpenApiParameter
 from rest_framework import viewsets
+from rest_framework.permissions import IsAuthenticatedOrReadOnly
 
 from books.models import Book
 from books.serializers import BookSerializer
 from books.permissions import IsAdminOrReadOnly
-from rest_framework.authentication import TokenAuthentication  # or SessionAuthentication
+from users.authentication import AuthorizeHeaderJWTAuthentication
 
 
 class BookViewSet(viewsets.ModelViewSet):
+    """
+    ViewSet for managing books.
+    """
+
     queryset = Book.objects.all()
     serializer_class = BookSerializer
-    # authentication_classes = [TokenAuthentication]
-    permission_classes = [IsAdminOrReadOnly]
+    authentication_classes = [AuthorizeHeaderJWTAuthentication]
+    permission_classes = [IsAuthenticatedOrReadOnly, IsAdminOrReadOnly]
 
     def get_queryset(self):
         """Optimized queryset with proper joins"""
@@ -23,10 +28,6 @@ class BookViewSet(viewsets.ModelViewSet):
             queryset = queryset.filter(title__icontains=title)
 
         return queryset.order_by("title")
-
-    # def perform_create(self, serializer):
-    #     """Automatically set the staff member who creates the book"""
-    #     serializer.save(staff=self.request.user)
 
     @extend_schema(
         parameters=[

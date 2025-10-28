@@ -1,16 +1,13 @@
-import pytz
+import logging
 
 from celery import shared_task
 from django.utils import timezone
 from django.db import transaction
 from payments.models import Payment
 from payments.stripe_service import StripeService
-import logging
+from core.utils.timezone_utils import KYIV_TZ, kyiv_now
 
 logger = logging.getLogger(__name__)
-
-
-KYIV_TZ = pytz.timezone("Europe/Kyiv")
 
 
 @shared_task(bind=True, max_retries=3, default_retry_delay=60)
@@ -28,7 +25,7 @@ def check_expired_stripe_sessions(self):
         dict: Summary of the task execution
     """
     try:
-        now = timezone.now().astimezone(KYIV_TZ)
+        now = kyiv_now()
 
         # Get all pending payments that should be expired
         potentially_expired_payments = Payment.objects.filter(
@@ -206,7 +203,7 @@ def cleanup_old_expired_payments():
         dict: Summary of cleanup operation
     """
     try:
-        cutoff_date = timezone.now().astimezone(KYIV_TZ) - timezone.timedelta(days=30)
+        cutoff_date = kyiv_now() - timezone.timedelta(days=30)
 
         # Delete expired payments older than 30 days
         expired_payments = Payment.objects.filter(
@@ -222,7 +219,7 @@ def cleanup_old_expired_payments():
             "status": "completed",
             "deleted_count": count,
             "cutoff_date": cutoff_date.isoformat(),
-            "timestamp": timezone.now().astimezone(KYIV_TZ).isoformat(),
+            "timestamp": kyiv_now().isoformat(),
         }
 
     except Exception as e:
@@ -230,5 +227,5 @@ def cleanup_old_expired_payments():
         return {
             "status": "error",
             "message": str(e),
-            "timestamp": timezone.now().astimezone(KYIV_TZ).isoformat(),
+            "timestamp": kyiv_now().isoformat(),
         }

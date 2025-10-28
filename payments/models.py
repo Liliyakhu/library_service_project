@@ -6,12 +6,21 @@ from django.core.exceptions import ValidationError
 from django.utils import timezone
 
 from borrowings.models import Borrowing
-from core.utils.timezone_utils import KYIV_TZ, kyiv_now
+from core.utils.timezone_utils import kyiv_now
 
 logger = logging.getLogger(__name__)
 
 
 class Payment(models.Model):
+    """
+    Payment model for borrowing fees and fines.
+
+    Status flow:
+        pending -> paid (successful payment)
+        pending -> expired (session timeout)
+        expired -> pending (session renewal)
+    """
+
     STATUS_CHOICES = [
         ("pending", "Pending"),
         ("paid", "Paid"),
@@ -42,7 +51,6 @@ class Payment(models.Model):
         max_digits=7, decimal_places=2, default=Decimal("0.00")
     )
     created_at = models.DateTimeField(auto_now_add=True)
-
     session_expires_at = models.DateTimeField(blank=True, null=True)
 
     class Meta:
@@ -73,7 +81,7 @@ class Payment(models.Model):
         ]
 
     def clean(self):
-        """Custom validation for Payment model"""
+        """Validate payment data."""
         super().clean()
 
         # Validate that session_url and session_id are both present or both absent
@@ -91,11 +99,11 @@ class Payment(models.Model):
             raise ValidationError("Payment amount must be greater than zero")
 
     def save(self, *args, **kwargs):
-        """Override save to set money_to_pay and validate"""
+        """Save with validation and auto-set expiration."""
         # Run validation first
         self.full_clean()
 
-        # Set session expiration time when session is created
+        # Set session expiration time when session is first created
         if self.session_id and not self.session_expires_at:
             self.session_expires_at = kyiv_now() + timezone.timedelta(
                 hours=settings.STRIPE_SESSION_EXPIRY_HOURS
@@ -108,6 +116,8 @@ class Payment(models.Model):
 
     def __str__(self):
         return f"Payment {self.id} - {self.get_status_display()} - ${self.money_to_pay}"
+
+    # ==================== Status Properties ====================
 
     @property
     def is_paid(self):
@@ -125,35 +135,24 @@ class Payment(models.Model):
 
     @property
     def is_renewable(self):
-        """Check if payment can be renewed (expired or pending with expired session)"""
-        if self.status == "paid":
-            return False
-        if self.status == "expired":
-            return True
-        # Pending with expired OR missing session
-        if self.status == "pending":
-            if self.session_id is None:  # No session created yet
-                return True
-            if self.is_expired:  # Session expired
-                return True
-        return False
+        """
+        Check if payment can be renewed.
 
-    @property
-    def borrower_email(self):
-        """Get borrower's email for convenience"""
-        if hasattr(self, "_borrowing_cache"):
-            return self._borrowing_cache.user.email
-        return self.borrowing.user.email
+        Returns:
+            bool: True if not paid and (expired or missing/expired session)
+        """
+        return self.status != "paid" and (
+            self.status == "expired" or self.session_id is None or self.is_expired
+        )
 
-    @property
-    def book_title(self):
-        """Get book title for convenience"""
-        if hasattr(self, "_borrowing_cache"):
-            return self._borrowing_cache.book.title
-        return self.borrowing.book.title
+    # ==================== Action Methods ====================
 
     def expire_session(self):
-        """Mark payment session as expired"""
+        """
+        Mark payment session as expired
+
+        Only updates if currently pending.
+        """
         if self.status == "pending":
             old_status = self.status
             self.status = "expired"
@@ -163,7 +162,16 @@ class Payment(models.Model):
             )
 
     def renew_session(self, new_session_id, new_session_url):
-        """Renew payment session with new Stripe session data"""
+        """
+        Renew payment session with new Stripe session data.
+
+        Args:
+            new_session_id: New Stripe session ID
+            new_session_url: New checkout URL
+
+        Raises:
+            ValidationError: If payment is not renewable
+        """
         if not self.is_renewable:
             raise ValidationError("Payment is not renewable")
 

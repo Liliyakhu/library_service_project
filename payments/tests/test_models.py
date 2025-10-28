@@ -274,14 +274,6 @@ class PaymentModelTestCase(APITestCase):
 
         self.assertFalse(self.payment.is_renewable)
 
-    def test_borrower_email_property(self):
-        """Test borrower_email property"""
-        self.assertEqual(self.payment.borrower_email, self.user.email)
-
-    def test_book_title_property(self):
-        """Test book_title property"""
-        self.assertEqual(self.payment.book_title, self.book.title)
-
     def test_expire_session_method(self):
         """Test expire_session method"""
         self.payment.status = "pending"

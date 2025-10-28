@@ -1,5 +1,4 @@
 import logging
-import pytz
 
 from django.db import connection
 from django.db.models.signals import post_init
@@ -29,13 +28,10 @@ from payments.permissions import IsOwnerOrStaffForPayments
 from payments.services import get_or_create_fine_payment
 from payments.stripe_service import StripeService
 from users.authentication import AuthorizeHeaderJWTAuthentication
-from core.utils.timezone_utils import kyiv_now
+from core.utils.timezone_utils import KYIV_TZ, kyiv_now
 from users.models import User
 
 logger = logging.getLogger(__name__)
-
-
-KYIV_TZ = pytz.timezone("Europe/Kyiv")
 
 
 class PaymentViewSet(viewsets.ModelViewSet):
@@ -508,7 +504,7 @@ class PaymentViewSet(viewsets.ModelViewSet):
         Get all renewable payments for current user (expired or pending with expired sessions)
         """
         user = request.user
-        now = timezone.now().astimezone(KYIV_TZ)
+        now = kyiv_now()
 
         if user.is_staff:
             # Staff can see all renewable payments
@@ -719,56 +715,65 @@ class PaymentViewSet(viewsets.ModelViewSet):
             )
         ]
     )
-    def list(self, request, *args, **kwargs):
-        """Get list of payments"""
-        return super().list(request, args, **kwargs)
-
     # def list(self, request, *args, **kwargs):
-    #     from django.db import reset_queries, connection
-    #
-    #     # before = len(connection.queries)
-    #     # response = super().list(request, *args, **kwargs)
-    #     # after = len(connection.queries)
-    #     # print("QUERIES EXECUTED:", after - before)
-    #
-    #     reset_queries()
-    #
-    #     print("\n" + "=" * 80)
-    #     print("STARTING LIST REQUEST")
-    #     print("=" * 80)
-    #
-    #     response = super().list(request, *args, **kwargs)
-    #
-    #     print("\n" + "=" * 80)
-    #     print(f"TOTAL QUERIES: {len(connection.queries)}")
-    #     print("=" * 80)
-    #
-    #     for i, query in enumerate(connection.queries, 1):
-    #         sql = query['sql']
-    #         print(f"\nQuery {i} [{query['time']}s]:")
-    #         print(sql[:4000])
-    #
-    #         # ✅ Better detection - check for WHERE with single ID (N+1 pattern)
-    #         if 'users_user' in sql and 'WHERE "users_user"."id" =' in sql:
-    #             print("⚠️  INDIVIDUAL USER QUERY - N+1 DETECTED")
-    #         if 'books_book' in sql and 'WHERE "books_book"."id" =' in sql:
-    #             print("⚠️  INDIVIDUAL BOOK QUERY - N+1 DETECTED")
-    #         if 'borrowings_borrowing' in sql and 'LIMIT 1000' in sql and 'payments_payment' not in sql:
-    #             print("⚠️  MYSTERY BORROWING QUERY")
-    #
-    #         # Find the mystery borrowing query
-    #         if 'borrowings_borrowing' in sql and 'LIMIT 1000' in sql and 'payments_payment' not in sql:
-    #             print("\n⚠️⚠️⚠️ MYSTERY BORROWING QUERY FOUND ⚠️⚠️⚠️")
-    #             print("This query shouldn't be here!")
-    #             # Print stack trace from query
-    #             if 'stack' in query:
-    #                 print("\nStack trace:")
-    #                 print(query['stack'])
-    #
-    #     print("\n" + "=" * 80)
-    #
-    #     return response
+    #     """Get list of payments"""
+    #     return super().list(request, args, **kwargs)
 
+    def list(self, request, *args, **kwargs):
+        from django.db import reset_queries, connection
+
+        # before = len(connection.queries)
+        # response = super().list(request, *args, **kwargs)
+        # after = len(connection.queries)
+        # print("QUERIES EXECUTED:", after - before)
+
+        reset_queries()
+
+        print("\n" + "=" * 80)
+        print("STARTING LIST REQUEST")
+        print("=" * 80)
+
+        response = super().list(request, *args, **kwargs)
+
+        print("\n" + "=" * 80)
+        print(f"TOTAL QUERIES: {len(connection.queries)}")
+        print("=" * 80)
+
+        for i, query in enumerate(connection.queries, 1):
+            sql = query["sql"]
+            print(f"\nQuery {i} [{query['time']}s]:")
+            print(sql[:4000])
+
+            # ✅ Better detection - check for WHERE with single ID (N+1 pattern)
+            if "users_user" in sql and 'WHERE "users_user"."id" =' in sql:
+                print("⚠️  INDIVIDUAL USER QUERY - N+1 DETECTED")
+            if "books_book" in sql and 'WHERE "books_book"."id" =' in sql:
+                print("⚠️  INDIVIDUAL BOOK QUERY - N+1 DETECTED")
+            if (
+                "borrowings_borrowing" in sql
+                and "LIMIT 1000" in sql
+                and "payments_payment" not in sql
+            ):
+                print("⚠️  MYSTERY BORROWING QUERY")
+
+            # Find the mystery borrowing query
+            if (
+                "borrowings_borrowing" in sql
+                and "LIMIT 1000" in sql
+                and "payments_payment" not in sql
+            ):
+                print("\n⚠️⚠️⚠️ MYSTERY BORROWING QUERY FOUND ⚠️⚠️⚠️")
+                print("This query shouldn't be here!")
+                # Print stack trace from query
+                if "stack" in query:
+                    print("\nStack trace:")
+                    print(query["stack"])
+
+        print("\n" + "=" * 80)
+
+        return response
+
+    #
     # def list(self, request, *args, **kwargs):
     #     from django.db import reset_queries, connection
     #

@@ -166,12 +166,6 @@ DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
 AUTH_USER_MODEL = "users.User"
 
-# REST_FRAMEWORK = {
-#     "DEFAULT_AUTHENTICATION_CLASSES": (
-#         "rest_framework_simplejwt.authentication.JWTAuthentication",
-#     ),
-#
-# }
 
 REST_FRAMEWORK = {
     "DEFAULT_AUTHENTICATION_CLASSES": [
@@ -212,17 +206,6 @@ SPECTACULAR_SETTINGS = {
         "defaultModelExpandDepth": 2,
     },
     "SECURITY": [{"Authorize": []}],
-    # "SECURITY_SCHEMES": {
-    #     "Authorize": {
-    #         "type": "apiKey",
-    #         "in": "header",
-    #         "name": "Authorize",  # your custom header name
-    #         "description": (
-    #             'Paste your JWT access token here (without "Bearer").\n\n'
-    #             "Example:\n\n    Authorize: <your_access_token>"
-    #         ),
-    #     },
-    # },
 }
 
 

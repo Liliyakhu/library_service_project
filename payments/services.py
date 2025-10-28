@@ -14,20 +14,27 @@ def create_payment(
     borrowing, payment_type="payment", request=None, create_session=True
 ):
     """
-    Centralized payment creation function.
+    Create a payment for a borrowing with optional Stripe session.
 
     Args:
         borrowing: Borrowing instance
-        payment_type: "payment" or "fine"
-        request: HTTP request (needed for creating Stripe sessions)
-        create_session: Whether to create Stripe session
+        payment_type: "payment" (normal fee) or "fine" (late fee)
+        request: HTTP request (needed for Stripe session URL generation)
+        create_session: Whether to create Stripe checkout session
 
     Returns:
         Payment instance
 
     Raises:
-        ValueError: If validation fails
+        ValueError: If validation fails or payment already exists
         Exception: If Stripe session creation fails
+
+    Examples:
+        # Create normal payment with session
+        payment = create_payment(borrowing, "payment", request=request)
+
+        # Create fine without session (for batch operations)
+        payment = create_payment(borrowing, "fine", create_session=False)
     """
     # Validate payment type
     if payment_type not in ["payment", "fine"]:
@@ -73,7 +80,12 @@ def create_payment(
     )
 
     # Create Stripe session if requested
-    if create_session and request:
+    if create_session:
+        if not request:
+            # Clean up payment if no request provided
+            payment.delete()
+            raise ValueError("Request object required to create Stripe session")
+
         try:
             stripe_result = StripeService.create_checkout_session(
                 payment, request=request
@@ -88,16 +100,13 @@ def create_payment(
                     f"{stripe_result['session_id']}"
                 )
             else:
-                # Cleanup payment if Stripe session creation failed
                 payment.delete()
                 error_msg = stripe_result.get("error", "Unknown error")
                 logger.error(
-                    f"Failed to create Stripe session for payment {payment.id}: "
-                    f"{error_msg}"
+                    f"Failed to create Stripe session for payment {payment.id}: {error_msg}"
                 )
                 raise Exception(f"Failed to create Stripe session: {error_msg}")
         except Exception as e:
-            # Ensure payment is cleaned up
             if payment.pk:
                 payment.delete()
             raise
@@ -105,40 +114,26 @@ def create_payment(
     return payment
 
 
-def create_payment_for_borrowing(borrowing, request=None):
-    """
-    Create a Payment + Stripe Checkout Session for a borrowing.
-    Wrapper around create_payment for backwards compatibility.
-    """
-    return create_payment(
-        borrowing=borrowing,
-        payment_type="payment",
-        request=request,
-        create_session=True,
-    )
-
-
-def create_fine_payment_for_borrowing(borrowing, request=None):
-    """
-    Create a FINE Payment + Stripe Checkout Session for an overdue borrowing.
-    Wrapper around create_payment for backwards compatibility.
-    """
-    return create_payment(
-        borrowing=borrowing, payment_type="fine", request=request, create_session=True
-    )
-
-
 def get_or_create_fine_payment(borrowing, request=None):
     """
-    Get existing fine payment or create new one for overdue borrowing.
+    Get existing fine payment or create new one.
+
+    Convenience wrapper for fine payments that may already exist.
+
+    Args:
+        borrowing: Borrowing instance
+        request: HTTP request for Stripe session
 
     Returns:
-        Payment instance or None if borrowing is not overdue
+        Payment instance
+
+    Raises:
+        ValueError: If borrowing is not overdue
     """
     if not borrowing.was_returned_late:
         raise ValueError("Borrowing is not overdue")
 
-    # Try to get existing fine payment (pending or paid)
+    # Check for existing fine (pending or paid)
     existing_fine = Payment.objects.filter(borrowing=borrowing, type="fine").first()
 
     if existing_fine:
@@ -147,28 +142,33 @@ def get_or_create_fine_payment(borrowing, request=None):
         )
         return existing_fine
 
-    # Create new fine payment
-    return create_fine_payment_for_borrowing(borrowing, request)
+    return create_payment(borrowing, payment_type="fine", request=request)
 
 
 def get_unpaid_payments_for_user(user):
     """
     Get all unpaid (pending + expired) payments for a user.
 
+    Args:
+        user: User instance
+
     Returns:
         QuerySet of Payment objects
     """
     return Payment.objects.filter(
         borrowing__user=user, status__in=["pending", "expired"]
-    ).select_related("borrowing__book")
+    ).select_related("borrowing__book", "borrowing__user")
 
 
 def has_pending_payments(user):
     """
     Check if user has any pending payments.
 
+    Args:
+        user: User instance
+
     Returns:
-        bool
+        bool: True if user has pending payments
     """
     return Payment.objects.filter(borrowing__user=user, status="pending").exists()
 
@@ -176,6 +176,8 @@ def has_pending_payments(user):
 def mark_payment_as_paid(payment):
     """
     Mark a payment as paid with proper logging.
+
+    Idempotent - safe to call multiple times.
 
     Args:
         payment: Payment instance

@@ -19,3 +19,6 @@ test_payments.py
 library.log
 .coverage
 dockerfile_explained
+code_optimization
+COUNT_REQUESTS_HELPER.py
+how_to_run_services

@@ -177,7 +177,7 @@ class BorrowingViewSetTestCase(APITestCase):
         self.assertEqual(len(response.data["results"]), 1)
         self.assertEqual(response.data["results"][0]["id"], returned.id)
 
-    @patch("borrowings.views.create_payment_for_borrowing")
+    @patch("borrowings.views.create_payment")
     @patch("borrowings.views.send_telegram_message")
     def test_create_borrowing_success(self, mock_telegram, mock_payment):
         """Test successful borrowing creation"""
@@ -451,7 +451,7 @@ class BorrowingViewSetTestCase(APITestCase):
         self.available_book.refresh_from_db()
         self.assertEqual(self.available_book.inventory, initial_inventory + 1)
 
-    @patch("borrowings.views.create_fine_payment_for_borrowing")
+    @patch("borrowings.views.create_payment")
     @patch("borrowings.views.send_telegram_message")
     def test_return_book_late(self, mock_telegram, mock_fine_payment):
         """Test returning book late creates fine payment"""

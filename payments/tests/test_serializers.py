@@ -141,7 +141,7 @@ class PaymentSerializerTestCase(APITestCase):
         """Test time_until_expiry shows hours and minutes"""
         real_now = kyiv_now()
 
-        with patch("payments.serializers.timezone.now", return_value=real_now):
+        with patch("payments.serializers.kyiv_now", return_value=real_now):
             self.payment.session_expires_at = real_now + timedelta(hours=2, minutes=30)
             self.payment.save(update_fields=["session_expires_at"])
 
@@ -157,7 +157,7 @@ class PaymentSerializerTestCase(APITestCase):
         real_now = kyiv_now()
 
         # Patch timezone.now() safely with a real datetime return value
-        with patch("payments.serializers.timezone.now", return_value=real_now):
+        with patch("payments.serializers.kyiv_now", return_value=real_now):
             self.payment.session_expires_at = real_now + timedelta(minutes=45)
             self.payment.save(update_fields=["session_expires_at"])
 

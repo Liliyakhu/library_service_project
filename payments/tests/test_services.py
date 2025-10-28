@@ -1,17 +1,15 @@
 from decimal import Decimal
 from datetime import timedelta
-from unittest.mock import patch, Mock, MagicMock
+from unittest.mock import patch, Mock
 
 from django.contrib.auth import get_user_model
 from django.test import RequestFactory
-from rest_framework.test import APITestCase, APIClient
+from rest_framework.test import APITestCase
 
 from borrowings.models import Borrowing
 from payments.models import Payment
 from payments.services import (
     create_payment,
-    create_payment_for_borrowing,
-    create_fine_payment_for_borrowing,
     get_or_create_fine_payment,
     get_unpaid_payments_for_user,
     has_pending_payments,
@@ -24,12 +22,13 @@ User = get_user_model()
 
 
 class CreatePaymentTestCase(APITestCase):
-    """Test suite for create_payment function"""
+    """
+    Test suite for create_payment function.
+    """
 
     def setUp(self):
         """Set up test data"""
         self.factory = RequestFactory()
-        self.client = APIClient()
 
         # Create test user
         self.user = User.objects.create_user(
@@ -143,6 +142,18 @@ class CreatePaymentTestCase(APITestCase):
 
         self.assertIn("paid", str(context.exception).lower())
 
+    def test_create_payment_requires_request_for_session(self):
+        """Test that request is required when create_session=True"""
+        with self.assertRaises(ValueError) as context:
+            create_payment(
+                borrowing=self.borrowing,
+                payment_type="payment",
+                request=None,  # No request provided
+                create_session=True,
+            )
+
+        self.assertIn("Request object required", str(context.exception))
+
     @patch("payments.services.StripeService.create_checkout_session")
     def test_create_payment_with_stripe_session_success(self, mock_stripe):
         """Test creating payment with successful Stripe session"""
@@ -210,74 +221,48 @@ class CreatePaymentTestCase(APITestCase):
             Payment.objects.filter(borrowing=self.borrowing, type="payment").exists()
         )
 
-
-class CreatePaymentWrappersTestCase(APITestCase):
-    """Test suite for create_payment wrapper functions"""
-
-    def setUp(self):
-        """Set up test data"""
-        self.factory = RequestFactory()
-
-        self.user = User.objects.create_user(
-            email="test@example.com", password="testpass123"
+    def test_create_payment_calculates_correct_amount(self):
+        """Test payment amount is calculated correctly"""
+        payment = create_payment(
+            borrowing=self.borrowing,
+            payment_type="payment",
+            create_session=False,
         )
 
-        self.book = Book.objects.create(
-            title="Test Book",
-            author="Test Author",
-            cover="hard",
-            inventory=5,
-            daily_fee=Decimal("2.00"),
+        expected_amount = self.borrowing.payment_fee
+        self.assertEqual(payment.money_to_pay, expected_amount)
+
+    def test_create_fine_calculates_correct_amount(self):
+        """Test fine amount is calculated correctly"""
+        payment = create_payment(
+            borrowing=self.overdue_borrowing,
+            payment_type="fine",
+            create_session=False,
         )
 
-        self.borrowing = Borrowing.objects.create(
-            user=self.user,
-            book=self.book,
-            borrow_date=kyiv_now().date(),
-            expected_return_date=(kyiv_now() + timedelta(days=7)).date(),
+        expected_amount = self.overdue_borrowing.fine_fee
+        self.assertEqual(payment.money_to_pay, expected_amount)
+        self.assertGreater(payment.money_to_pay, Decimal("0"))
+
+    def test_create_payment_allows_separate_payment_and_fine(self):
+        """Test can create both payment and fine for same borrowing"""
+        # Create normal payment
+        payment1 = create_payment(
+            borrowing=self.overdue_borrowing,
+            payment_type="payment",
+            create_session=False,
         )
 
-        self.overdue_borrowing = Borrowing.objects.create(
-            user=self.user,
-            book=self.book,
-            borrow_date=(kyiv_now() - timedelta(days=10)).date(),
-            expected_return_date=(kyiv_now() - timedelta(days=3)).date(),
-            actual_return_date=kyiv_now().date(),
+        # Create fine payment
+        payment2 = create_payment(
+            borrowing=self.overdue_borrowing,
+            payment_type="fine",
+            create_session=False,
         )
 
-    @patch("payments.services.StripeService.create_checkout_session")
-    def test_create_payment_for_borrowing(self, mock_stripe):
-        """Test create_payment_for_borrowing wrapper"""
-        mock_stripe.return_value = {
-            "success": True,
-            "session_id": "sess_123",
-            "session_url": "https://stripe.com/checkout",
-        }
-
-        request = self.factory.post("/payments/")
-        request.user = self.user
-
-        payment = create_payment_for_borrowing(self.borrowing, request)
-
-        self.assertEqual(payment.type, "payment")
-        self.assertIsNotNone(payment.session_id)
-
-    @patch("payments.services.StripeService.create_checkout_session")
-    def test_create_fine_payment_for_borrowing(self, mock_stripe):
-        """Test create_fine_payment_for_borrowing wrapper"""
-        mock_stripe.return_value = {
-            "success": True,
-            "session_id": "sess_fine",
-            "session_url": "https://stripe.com/checkout/fine",
-        }
-
-        request = self.factory.post("/payments/")
-        request.user = self.user
-
-        payment = create_fine_payment_for_borrowing(self.overdue_borrowing, request)
-
-        self.assertEqual(payment.type, "fine")
-        self.assertIsNotNone(payment.session_id)
+        self.assertNotEqual(payment1.id, payment2.id)
+        self.assertEqual(payment1.type, "payment")
+        self.assertEqual(payment2.type, "fine")
 
 
 class GetOrCreateFinePaymentTestCase(APITestCase):
@@ -319,7 +304,7 @@ class GetOrCreateFinePaymentTestCase(APITestCase):
         with self.assertRaisesMessage(ValueError, "Borrowing is not overdue"):
             get_or_create_fine_payment(self.normal_borrowing)
 
-    @patch("payments.services.create_fine_payment_for_borrowing")
+    @patch("payments.services.create_payment")
     def test_get_or_create_fine_payment_creates_new(self, mock_create):
         """Test creates new fine payment if none exists"""
         mock_payment = Mock(spec=Payment)
@@ -329,10 +314,12 @@ class GetOrCreateFinePaymentTestCase(APITestCase):
         result = get_or_create_fine_payment(self.overdue_borrowing, request)
 
         self.assertEqual(result, mock_payment)
-        mock_create.assert_called_once_with(self.overdue_borrowing, request)
+        mock_create.assert_called_once_with(
+            self.overdue_borrowing, payment_type="fine", request=request
+        )
 
-    def test_get_or_create_fine_payment_returns_existing(self):
-        """Test returns existing fine payment"""
+    def test_get_or_create_fine_payment_returns_existing_pending(self):
+        """Test returns existing pending fine payment"""
         existing_fine = Payment.objects.create(
             borrowing=self.overdue_borrowing,
             type="fine",
@@ -344,7 +331,7 @@ class GetOrCreateFinePaymentTestCase(APITestCase):
 
         self.assertEqual(result.id, existing_fine.id)
 
-    def test_get_or_create_fine_payment_returns_paid_fine(self):
+    def test_get_or_create_fine_payment_returns_existing_paid(self):
         """Test returns existing paid fine payment"""
         paid_fine = Payment.objects.create(
             borrowing=self.overdue_borrowing,
@@ -358,6 +345,19 @@ class GetOrCreateFinePaymentTestCase(APITestCase):
         result = get_or_create_fine_payment(self.overdue_borrowing)
 
         self.assertEqual(result.id, paid_fine.id)
+
+    def test_get_or_create_fine_payment_returns_existing_expired(self):
+        """Test returns existing expired fine payment"""
+        expired_fine = Payment.objects.create(
+            borrowing=self.overdue_borrowing,
+            type="fine",
+            status="expired",
+            money_to_pay=Decimal("5.00"),
+        )
+
+        result = get_or_create_fine_payment(self.overdue_borrowing)
+
+        self.assertEqual(result.id, expired_fine.id)
 
 
 class GetUnpaidPaymentsTestCase(APITestCase):
@@ -502,6 +502,25 @@ class GetUnpaidPaymentsTestCase(APITestCase):
         self.assertEqual(payments.count(), 1)
         self.assertEqual(payments.first().borrowing.user, self.user1)
 
+    def test_get_unpaid_payments_uses_select_related(self):
+        """Test that queryset uses select_related for optimization"""
+        Payment.objects.create(
+            borrowing=self.borrowing1,
+            type="payment",
+            status="pending",
+            money_to_pay=Decimal("10.00"),
+        )
+
+        payments = get_unpaid_payments_for_user(self.user1)
+
+        # Check that query is optimized
+        with self.assertNumQueries(1):
+            list(payments)  # Force queryset evaluation
+            # Access related objects (should not cause additional queries)
+            for payment in payments:
+                _ = payment.borrowing.book.title
+                _ = payment.borrowing.user.email
+
 
 class HasPendingPaymentsTestCase(APITestCase):
     """Test suite for has_pending_payments function"""
@@ -574,6 +593,26 @@ class HasPendingPaymentsTestCase(APITestCase):
 
         self.assertFalse(result)
 
+    def test_has_pending_payments_multiple_pending(self):
+        """Test returns True when multiple pending payments exist"""
+        Payment.objects.create(
+            borrowing=self.borrowing,
+            type="payment",
+            status="pending",
+            money_to_pay=Decimal("10.00"),
+        )
+
+        Payment.objects.create(
+            borrowing=self.borrowing,
+            type="fine",
+            status="pending",
+            money_to_pay=Decimal("5.00"),
+        )
+
+        result = has_pending_payments(self.user)
+
+        self.assertTrue(result)
+
 
 class MarkPaymentAsPaidTestCase(APITestCase):
     """Test suite for mark_payment_as_paid function"""
@@ -631,8 +670,8 @@ class MarkPaymentAsPaidTestCase(APITestCase):
         result.refresh_from_db()
         self.assertEqual(result.status, "paid")
 
-    def test_mark_payment_as_paid_already_paid(self):
-        """Test marking already paid payment (idempotent)"""
+    def test_mark_payment_as_paid_already_paid_idempotent(self):
+        """Test marking already paid payment is idempotent"""
         payment = Payment.objects.create(
             borrowing=self.borrowing,
             type="payment",
@@ -663,9 +702,19 @@ class MarkPaymentAsPaidTestCase(APITestCase):
         self.assertIsInstance(result, Payment)
         self.assertEqual(result.id, payment.id)
 
-    def tearDown(self):
-        """Clean up test data"""
-        Payment.objects.all().delete()
-        Borrowing.objects.all().delete()
-        Book.objects.all().delete()
-        User.objects.all().delete()
+    def test_mark_payment_as_paid_persists_to_database(self):
+        """Test that payment status is persisted to database"""
+        payment = Payment.objects.create(
+            borrowing=self.borrowing,
+            type="payment",
+            status="pending",
+            money_to_pay=Decimal("10.00"),
+            session_id="sess_123",
+            session_url="https://stripe.com/session",
+        )
+
+        mark_payment_as_paid(payment)
+
+        # Fetch fresh from database
+        updated_payment = Payment.objects.get(id=payment.id)
+        self.assertEqual(updated_payment.status, "paid")

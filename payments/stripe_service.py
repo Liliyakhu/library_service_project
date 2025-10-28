@@ -1,15 +1,12 @@
-import pytz
 import logging
 import stripe
 
 from django.urls import reverse
 from django.utils import timezone
+from core.utils.timezone_utils import KYIV_TZ, kyiv_now
 
 
 logger = logging.getLogger(__name__)
-
-
-KYIV_TZ = pytz.timezone("Europe/Kyiv")
 
 
 class StripeService:
@@ -64,10 +61,7 @@ class StripeService:
                     "borrowing_id": payment.borrowing.id,
                 },
                 expires_at=int(
-                    (
-                        timezone.now().astimezone(KYIV_TZ)
-                        + timezone.timedelta(hours=24)
-                    ).timestamp()
+                    (kyiv_now() + timezone.timedelta(hours=24)).timestamp()
                 ),  # Explicit expiration
             )
 
@@ -245,10 +239,7 @@ class StripeService:
                         "amount": str(amount),
                     },
                     expires_at=int(
-                        (
-                            timezone.now().astimezone(KYIV_TZ)
-                            + timezone.timedelta(hours=24)
-                        ).timestamp()
+                        (kyiv_now() + timezone.timedelta(hours=24)).timestamp()
                     ),
                 )
 

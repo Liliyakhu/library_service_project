@@ -156,7 +156,7 @@ class BookViewSetTestCase(APITestCase):
         url = reverse("books:books-detail", args=[self.book.id])
         response = client.delete(url)
 
-        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+        self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
         self.assertTrue(Book.objects.filter(id=self.book.id).exists())
 
     # ---------------- VALIDATION & FILTERING TESTS ----------------
