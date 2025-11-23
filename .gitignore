@@ -11,3 +11,8 @@ venv/
 media
 data
 venv
+code.txt
+personal.py
+debug_timezone.py
+check_payment_status.py
+test_payments.py

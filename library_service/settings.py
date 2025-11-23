@@ -11,11 +11,17 @@ https://docs.djangoproject.com/en/5.1/ref/settings/
 """
 
 import os
+import pytz
+
+from django.utils import timezone
 from datetime import timedelta
 from pathlib import Path
+
+import stripe
 from dotenv import load_dotenv
 
 load_dotenv()
+
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -26,6 +32,12 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 
 # SECURITY WARNING: keep the secret key used in production secret!
 SECRET_KEY = os.environ["SECRET_KEY"]
+
+TELEGRAM_NOTIFICATIONS_ENABLED = (
+    os.getenv("TELEGRAM_NOTIFICATIONS_ENABLED", "False").lower() == "true"
+)
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
 
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = True
@@ -46,8 +58,12 @@ INSTALLED_APPS = [
     "debug_toolbar",
     "rest_framework",
     "rest_framework_simplejwt",
+    "django_celery_beat",
     "books",
-    "users"
+    "users",
+    "borrowings",
+    "notifications",
+    "payments",
 ]
 
 MIDDLEWARE = [
@@ -117,7 +133,9 @@ AUTH_PASSWORD_VALIDATORS = [
 
 LANGUAGE_CODE = "en-us"
 
-TIME_ZONE = "UTC"
+TIME_ZONE = "Europe/Kyiv"
+KYIV_TZ = pytz.timezone("Europe/Kyiv")
+KYIV_TIME = timezone.now().astimezone(KYIV_TZ)
 
 USE_I18N = True
 
@@ -144,13 +162,80 @@ AUTH_USER_MODEL = "users.User"
 # }
 
 REST_FRAMEWORK = {
-    "DEFAULT_AUTHENTICATION_CLASSES": (
+    "DEFAULT_AUTHENTICATION_CLASSES": [
         "users.authentication.AuthorizeHeaderJWTAuthentication",
-    )
+    ],
+    "DEFAULT_PERMISSION_CLASSES": [
+        "rest_framework.permissions.IsAuthenticated",
+    ],
+    "DEFAULT_PAGINATION_CLASS": "rest_framework.pagination.PageNumberPagination",
+    "PAGE_SIZE": 20,
 }
 
 SIMPLE_JWT = {
-    "ACCESS_TOKEN_LIFETIME": timedelta(minutes=5),
+    "ACCESS_TOKEN_LIFETIME": timedelta(minutes=30),
     "REFRESH_TOKEN_LIFETIME": timedelta(days=1),
     "ROTATE_REFRESH_TOKENS": False,
 }
+
+# Celery Configuration
+CELERY_BROKER_URL = os.environ.get("CELERY_BROKER_URL", "redis://localhost:6379/0")
+CELERY_RESULT_BACKEND = os.environ.get(
+    "CELERY_RESULT_BACKEND", "redis://localhost:6379/0"
+)
+# Result settings optimized for Flower
+CELERY_RESULT_EXTENDED = True
+CELERY_RESULT_EXPIRES = 3600 * 24  # Results expire after 1 day (lighter storage)
+CELERY_TASK_TRACK_STARTED = True
+CELERY_TASK_SEND_SENT_EVENT = True
+
+# Serialization
+CELERY_ACCEPT_CONTENT = ["json"]
+CELERY_TASK_SERIALIZER = "json"
+CELERY_RESULT_SERIALIZER = "json"
+
+# Timezone
+CELERY_TIMEZONE = "Europe/Kyiv"
+CELERY_ENABLE_UTC = False
+
+# Task execution settings
+CELERY_TASK_ALWAYS_EAGER = False
+CELERY_TASK_EAGER_PROPAGATES = True
+CELERY_TASK_STORE_EAGER_RESULT = False  # No need to store in eager mode
+
+# Worker settings for better Flower monitoring
+CELERY_WORKER_SEND_TASK_EVENTS = True
+CELERY_SEND_EVENTS = True
+
+# # Celery Beat (scheduler) settings
+# CELERY_BEAT_SCHEDULE = {
+#     'check-overdue-borrowings-daily': {
+#         'task': 'notifications.tasks.check_overdue_borrowings',
+#         'schedule': 60.0 * 60.0 * 24.0,  # Run every 24 hours
+#         # 'schedule': crontab(hour=9, minute=0),  # Run daily at 9:00 AM
+#         # Uncomment above and comment the line above to use cron-style scheduling
+#     },
+# }
+# CELERY_BEAT_SCHEDULER = 'django_celery_beat.schedulers:DatabaseScheduler'
+
+
+# Stripe settings
+# Your test publishable key
+STRIPE_PUBLISHABLE_KEY = os.getenv("STRIPE_PUBLISHABLE_KEY", "pk_test")
+# Your test secret key
+STRIPE_SECRET_KEY = os.getenv("STRIPE_SECRET_KEY", "sk_test")
+# Webhook endpoint secret
+STRIPE_WEBHOOK_SECRET = os.getenv("STRIPE_WEBHOOK_SECRET", "whsec")
+
+# Configure Stripe
+stripe.api_key = STRIPE_SECRET_KEY
+
+# Payment configuration
+PAYMENT_SUCCESS_URL = os.getenv(
+    "PAYMENT_SUCCESS_URL", "http://localhost:8000/api/payments/success/"
+)
+PAYMENT_CANCEL_URL = os.getenv(
+    "PAYMENT_CANCEL_URL", "http://localhost:8000/api/payments/cancel/"
+)
+
+FINE_MULTIPLIER = float(os.getenv("FINE_MULTIPLIER", "2.0"))
