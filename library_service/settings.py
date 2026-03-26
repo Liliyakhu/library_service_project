@@ -11,11 +11,18 @@ https://docs.djangoproject.com/en/5.1/ref/settings/
 """
 
 import os
+import pytz
+from django.core.exceptions import ImproperlyConfigured
+
+from django.utils import timezone
 from datetime import timedelta
 from pathlib import Path
+
+import stripe
 from dotenv import load_dotenv
 
 load_dotenv()
+
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -24,13 +31,26 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 # Quick-start development settings - unsuitable for production
 # See https://docs.djangoproject.com/en/5.1/howto/deployment/checklist/
 
-# SECURITY WARNING: keep the secret key used in production secret!
-SECRET_KEY = os.environ["SECRET_KEY"]
-
 # SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = True
+DEBUG = os.getenv("DEBUG", "False").lower() == "true"
 
-ALLOWED_HOSTS = []
+# SECURITY WARNING: keep the secret key used in production secret!
+if DEBUG:
+    SECRET_KEY = os.getenv("SECRET_KEY", "dev-secret-key")
+else:
+    SECRET_KEY = os.getenv("SECRET_KEY")
+    if not SECRET_KEY:
+        raise ImproperlyConfigured("SECRET_KEY is not set for production!")
+
+TELEGRAM_NOTIFICATIONS_ENABLED = (
+    os.getenv("TELEGRAM_NOTIFICATIONS_ENABLED", "False").lower() == "true"
+)
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
+
+ALLOWED_HOSTS = (
+    os.getenv("ALLOWED_HOSTS", "").split(",") if os.getenv("ALLOWED_HOSTS") else []
+)
 
 INTERNAL_IPS = ["127.0.0.1", "localhost"]
 
@@ -46,8 +66,12 @@ INSTALLED_APPS = [
     "debug_toolbar",
     "rest_framework",
     "rest_framework_simplejwt",
+    "django_celery_beat",
     "books",
-    "users"
+    "users",
+    "borrowings",
+    "notifications",
+    "payments",
 ]
 
 MIDDLEWARE = [
@@ -89,6 +113,7 @@ DATABASES = {
     "default": {
         "ENGINE": "django.db.backends.sqlite3",
         "NAME": BASE_DIR / "db.sqlite3",
+        "ATOMIC_REQUESTS": True,
     }
 }
 
@@ -116,22 +141,17 @@ AUTH_PASSWORD_VALIDATORS = [
 # https://docs.djangoproject.com/en/5.1/topics/i18n/
 
 LANGUAGE_CODE = "en-us"
-
-TIME_ZONE = "UTC"
-
+TIME_ZONE = "Europe/Kyiv"
 USE_I18N = True
-
 USE_TZ = True
 
 
 # Static files (CSS, JavaScript, Images)
 # https://docs.djangoproject.com/en/5.1/howto/static-files/
-
 STATIC_URL = "static/"
 
 # Default primary key field type
 # https://docs.djangoproject.com/en/5.1/ref/settings/#default-auto-field
-
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
 AUTH_USER_MODEL = "users.User"
@@ -144,13 +164,145 @@ AUTH_USER_MODEL = "users.User"
 # }
 
 REST_FRAMEWORK = {
-    "DEFAULT_AUTHENTICATION_CLASSES": (
+    "DEFAULT_AUTHENTICATION_CLASSES": [
         "users.authentication.AuthorizeHeaderJWTAuthentication",
-    )
+    ],
+    "DEFAULT_PERMISSION_CLASSES": [
+        "rest_framework.permissions.IsAuthenticated",
+    ],
+    "DEFAULT_PAGINATION_CLASS": "rest_framework.pagination.PageNumberPagination",
+    "PAGE_SIZE": 20,
+    "DEFAULT_THROTTLE_CLASSES": [
+        "rest_framework.throttling.AnonRateThrottle",
+        "rest_framework.throttling.UserRateThrottle",
+    ],
+    "DEFAULT_THROTTLE_RATES": {
+        "anon": "100/hour",
+        "user": "1000/hour",
+    },
 }
 
 SIMPLE_JWT = {
-    "ACCESS_TOKEN_LIFETIME": timedelta(minutes=5),
+    "ACCESS_TOKEN_LIFETIME": timedelta(minutes=30),
     "REFRESH_TOKEN_LIFETIME": timedelta(days=1),
     "ROTATE_REFRESH_TOKENS": False,
 }
+
+# Celery Configuration
+CELERY_BROKER_URL = os.environ.get("CELERY_BROKER_URL", "redis://localhost:6379/0")
+CELERY_RESULT_BACKEND = os.environ.get(
+    "CELERY_RESULT_BACKEND", "redis://localhost:6379/0"
+)
+# Result settings optimized for Flower
+CELERY_RESULT_EXTENDED = True
+CELERY_RESULT_EXPIRES = 3600 * 24  # Results expire after 1 day (lighter storage)
+CELERY_TASK_TRACK_STARTED = True
+CELERY_TASK_SEND_SENT_EVENT = True
+
+# Serialization
+CELERY_ACCEPT_CONTENT = ["json"]
+CELERY_TASK_SERIALIZER = "json"
+CELERY_RESULT_SERIALIZER = "json"
+
+# Timezone
+CELERY_TIMEZONE = "Europe/Kyiv"
+CELERY_ENABLE_UTC = False
+
+# Task execution settings
+CELERY_TASK_ALWAYS_EAGER = False
+CELERY_TASK_EAGER_PROPAGATES = True
+CELERY_TASK_STORE_EAGER_RESULT = False  # No need to store in eager mode
+
+# Worker settings for better Flower monitoring
+CELERY_WORKER_SEND_TASK_EVENTS = True
+CELERY_SEND_EVENTS = True
+
+# # Celery Beat (scheduler) settings
+# CELERY_BEAT_SCHEDULE = {
+#     'check-overdue-borrowings-daily': {
+#         'task': 'notifications.tasks.check_overdue_borrowings',
+#         'schedule': 60.0 * 60.0 * 24.0,  # Run every 24 hours
+#         # 'schedule': crontab(hour=9, minute=0),  # Run daily at 9:00 AM
+#         # Uncomment above and comment the line above to use cron-style scheduling
+#     },
+#     # NEW: Check expired Stripe sessions every minute
+#     'check-expired-stripe-sessions': {
+#         'task': 'payments.tasks.check_expired_stripe_sessions',
+#         'schedule': 60.0,  # Run every 60 seconds (1 minute)
+#     },
+#     # NEW: Cleanup old expired payments weekly
+#     'cleanup-old-expired-payments': {
+#         'task': 'payments.tasks.cleanup_old_expired_payments',
+#         'schedule': 60.0 * 60.0 * 24.0 * 7.0,  # Run every 7 days
+#     },
+# }
+# CELERY_BEAT_SCHEDULER = 'django_celery_beat.schedulers:DatabaseScheduler'
+
+
+# Stripe settings
+STRIPE_PUBLISHABLE_KEY = os.getenv("STRIPE_PUBLISHABLE_KEY", "")
+STRIPE_SECRET_KEY = os.getenv("STRIPE_SECRET_KEY", "")
+STRIPE_WEBHOOK_SECRET = os.getenv("STRIPE_WEBHOOK_SECRET", "")
+
+# Only configure Stripe if we have a valid key
+if STRIPE_SECRET_KEY and STRIPE_SECRET_KEY.startswith("sk_"):
+    stripe.api_key = STRIPE_SECRET_KEY
+
+
+# Payment configuration
+PAYMENT_SUCCESS_URL = os.getenv(
+    "PAYMENT_SUCCESS_URL", "http://localhost:8000/api/payments/success/"
+)
+PAYMENT_CANCEL_URL = os.getenv(
+    "PAYMENT_CANCEL_URL", "http://localhost:8000/api/payments/cancel/"
+)
+
+# Business logic constants
+FINE_MULTIPLIER = float(os.getenv("FINE_MULTIPLIER", "2.0"))
+MAX_BORROWING_DAYS = int(os.getenv("MAX_BORROWING_DAYS", "30"))
+STRIPE_SESSION_EXPIRY_HOURS = 24
+OLD_PAYMENT_CLEANUP_DAYS = 30
+
+# Logging configuration
+LOGGING = {
+    "version": 1,
+    "disable_existing_loggers": False,
+    "formatters": {
+        "verbose": {
+            "format": "{levelname} {asctime} {module} {message}",
+            "style": "{",
+        },
+    },
+    "handlers": {
+        "console": {
+            "class": "logging.StreamHandler",
+            "formatter": "verbose",
+        },
+        "file": {
+            "class": "logging.FileHandler",
+            "filename": BASE_DIR / "logs" / "library.log",
+            "formatter": "verbose",
+        },
+    },
+    "loggers": {
+        "django": {
+            "handlers": ["console", "file"],
+            "level": os.getenv("DJANGO_LOG_LEVEL", "INFO"),
+        },
+        "borrowings": {
+            "handlers": ["console", "file"],
+            "level": "INFO",
+        },
+        "payments": {
+            "handlers": ["console", "file"],
+            "level": "INFO",
+        },
+        "notifications": {
+            "handlers": ["console", "file"],
+            "level": "INFO",
+        },
+    },
+}
+
+# Create logs directory if it doesn't exist
+(BASE_DIR / "logs").mkdir(exist_ok=True)
