@@ -1,0 +1,923 @@
+import logging
+import pytz
+
+from django.db import connection
+from django.db.models.signals import post_init
+import traceback
+from django.db import models
+from django.db.models import Prefetch
+from django.utils import timezone
+from datetime import timedelta
+
+from drf_spectacular.utils import extend_schema, OpenApiParameter
+from rest_framework import viewsets, status, permissions
+from rest_framework.decorators import action
+from rest_framework.renderers import JSONRenderer
+from rest_framework.response import Response
+from rest_framework.decorators import api_view
+from django.db import transaction
+from django.shortcuts import get_object_or_404
+
+from books.models import Book
+from payments.models import Payment, Borrowing
+from payments.serializers import (
+    PaymentSerializer,
+    PaymentCreateSerializer,
+    PaymentDetailSerializer,
+)
+from payments.permissions import IsOwnerOrStaffForPayments
+from payments.services import get_or_create_fine_payment
+from payments.stripe_service import StripeService
+from users.authentication import AuthorizeHeaderJWTAuthentication
+from core.utils.timezone_utils import kyiv_now
+from users.models import User
+
+logger = logging.getLogger(__name__)
+
+
+KYIV_TZ = pytz.timezone("Europe/Kyiv")
+
+
+class PaymentViewSet(viewsets.ModelViewSet):
+    """ViewSet for managing payments"""
+
+    authentication_classes = [AuthorizeHeaderJWTAuthentication]
+    permission_classes = [permissions.IsAuthenticated, IsOwnerOrStaffForPayments]
+    # renderer_classes = [JSONRenderer]
+
+    def get_queryset(self):
+        """Filter payments based on user permissions"""
+        user = self.request.user
+
+        queryset = Payment.objects.select_related(
+            "borrowing__book",
+            "borrowing__user",
+        ).order_by("-created_at")
+
+        if not user.is_staff:
+            queryset = queryset.filter(borrowing__user=user)
+
+        # Optional filtering by status
+        status_filter = self.request.query_params.get("status")
+        if status_filter in ["pending", "paid", "expired"]:
+            queryset = queryset.filter(status=status_filter)
+
+        return queryset
+
+    def get_serializer_class(self):
+        """Return appropriate serializer based on action"""
+        if self.action == "create":
+            return PaymentCreateSerializer
+        elif self.action in ["retrieve"]:
+            return PaymentDetailSerializer
+        return PaymentSerializer
+
+    @transaction.atomic
+    def create(self, request, *args, **kwargs):
+        """Create a new payment and Stripe checkout session"""
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        # Create the payment object
+        payment = serializer.save()
+
+        # Create Stripe checkout session
+        stripe_result = StripeService.create_checkout_session(payment, request)
+
+        if stripe_result["success"]:
+            # Update payment with Stripe session info
+            payment.session_id = stripe_result["session_id"]
+            payment.session_url = stripe_result["session_url"]
+            payment.save()
+
+            # Return payment details
+            response_serializer = PaymentDetailSerializer(payment)
+            return Response(response_serializer.data, status=status.HTTP_201_CREATED)
+        else:
+            # Delete payment if Stripe session creation failed
+            payment.delete()
+            return Response(
+                {
+                    "error": f'Failed to create payment session: {stripe_result.get("error", "Unknown error")}'
+                },
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
+
+    def update(self, request, *args, **kwargs):
+        """Prevent direct payment updates - should be handled via webhooks or specific actions"""
+        return Response(
+            {
+                "error": "Direct payment updates are not allowed. Use payment completion endpoints."
+            },
+            status=status.HTTP_405_METHOD_NOT_ALLOWED,
+        )
+
+    def destroy(self, request, *args, **kwargs):
+        """Only allow deletion of pending payments"""
+        payment = self.get_object()
+
+        if payment.status == "paid":
+            return Response(
+                {"error": "Cannot delete completed payments."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        payment.delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+    @action(detail=True, methods=["post"])
+    def check_session(self, request, pk=None):
+        """Check the status of a Stripe payment session"""
+        payment = self.get_object()
+
+        if not payment.session_id:
+            return Response(
+                {"error": "No Stripe session found for this payment"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # Check session status with Stripe
+        session = StripeService.retrieve_checkout_session(payment.session_id)
+
+        if not session:
+            return Response(
+                {"error": "Could not retrieve session from Stripe"},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
+
+        # Update payment status if paid
+        if session.payment_status == "paid" and payment.status == "pending":
+            payment.status = "paid"
+            payment.save()
+
+        return Response(
+            {
+                "payment_id": payment.id,
+                "payment_status": payment.status,
+                "stripe_session_status": session.payment_status,
+                "session_url": payment.session_url,
+            }
+        )
+
+    @action(detail=True, methods=["post"])
+    def mark_paid(self, request, pk=None):
+        """Manually mark a payment as paid (staff only)"""
+        if not request.user.is_staff:
+            return Response(
+                {"error": "Only staff can manually mark payments as paid"},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        payment = self.get_object()
+
+        if payment.status == "paid":
+            return Response(
+                {"error": "Payment is already marked as paid"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        payment.status = "paid"
+        payment.save()
+
+        serializer = PaymentDetailSerializer(payment)
+        return Response(serializer.data)
+
+    @action(detail=False, methods=["get"])
+    def my_payments(self, request):
+        """Get current user's payments"""
+        payments = (
+            Payment.objects.select_related("borrowing__book", "borrowing__user")
+            .filter(borrowing__user=request.user)
+            .order_by("-created_at")
+        )
+
+        page = self.paginate_queryset(payments)
+        if page is not None:
+            serializer = self.get_serializer(page, many=True)
+            return self.get_paginated_response(serializer.data)
+
+            # No pagination (fallback)
+        serializer = self.get_serializer(payments, many=True)
+        return Response(serializer.data)
+
+    @action(detail=False, methods=["post"])
+    def create_test_sessions(self, request):
+        """Create test Stripe sessions (development only)"""
+        if not request.user.is_staff:
+            return Response(
+                {"error": "Only staff can create test sessions"},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        test_sessions = StripeService.create_test_sessions()
+
+        if test_sessions:
+            return Response(
+                {
+                    "message": "Test sessions created successfully",
+                    "sessions": test_sessions,
+                }
+            )
+        else:
+            return Response(
+                {"error": "Failed to create test sessions"},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
+
+    @action(detail=False, methods=["post"])
+    def sync_with_stripe(self, request):
+        """Check all pending payments against Stripe and update statuses"""
+        if not request.user.is_staff:
+            return Response(
+                {"error": "Only staff can sync payment statuses"},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        pending_payments = Payment.objects.filter(
+            status="pending", session_id__isnull=False
+        )
+
+        updated_count = 0
+        errors = []
+
+        for payment in pending_payments:
+            try:
+                session = StripeService.retrieve_checkout_session(payment.session_id)
+                if session and session.payment_status == "paid":
+                    payment.status = "paid"
+                    payment.save()
+                    updated_count += 1
+            except Exception as e:
+                errors.append(f"Payment {payment.id}: {str(e)}")
+
+        return Response(
+            {
+                "message": f"Updated {updated_count} payments to paid status",
+                "updated_count": updated_count,
+                "total_checked": pending_payments.count(),
+                "errors": errors,
+            }
+        )
+
+    @action(detail=False, methods=["get"])
+    def webhook_events(self, request):
+        """Get recent webhook events for debugging (staff only)"""
+        if not request.user.is_staff:
+            return Response(
+                {"error": "Only staff can view webhook events"},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        events = StripeService.get_webhook_events()
+
+        return Response(
+            {
+                "events": [
+                    {
+                        "id": event.id,
+                        "type": event.type,
+                        "created": event.created,
+                        "data": event.data,
+                    }
+                    for event in events
+                ]
+            }
+        )
+
+    @action(detail=False, methods=["post"])
+    def test_webhook(self, request):
+        """Test webhook functionality (development only)"""
+        if not request.user.is_staff:
+            return Response(
+                {"error": "Only staff can test webhooks"},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+    @action(detail=False, methods=["get"])
+    def my_fines(self, request):
+        """Get current user's fine payments"""
+        fine_payments = (
+            Payment.objects.select_related("borrowing__book", "borrowing__user")
+            .filter(borrowing__user=request.user, type="fine")
+            .order_by("-created_at")
+        )
+
+        serializer = PaymentSerializer(fine_payments, many=True)
+        return Response(serializer.data)
+
+    @action(detail=False, methods=["post"])
+    def create_fine_for_borrowing(self, request):
+        """Create fine payment for a specific borrowing (staff only)"""
+        if not request.user.is_staff:
+            return Response(
+                {"error": "Only staff can create fine payments"},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        borrowing_id = request.data.get("borrowing_id")
+        if not borrowing_id:
+            return Response(
+                {"error": "borrowing_id is required"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            from borrowings.models import Borrowing
+
+            borrowing = Borrowing.objects.get(id=borrowing_id)
+
+            # ✅ FIX: Check was_returned_late instead of is_overdue
+            if not borrowing.was_returned_late:
+                # if not borrowing.is_overdue:
+                return Response(
+                    {"error": "Borrowing is not overdue"},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+            fine_payment = get_or_create_fine_payment(borrowing, request=request)
+            serializer = PaymentDetailSerializer(fine_payment)
+            return Response(serializer.data, status=status.HTTP_201_CREATED)
+
+        except Borrowing.DoesNotExist:
+            return Response(
+                {"error": "Borrowing not found"},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+        except Exception as e:
+            return Response(
+                {"error": f"Failed to create fine payment: {str(e)}"},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
+
+    @action(detail=True, methods=["post"])
+    def renew_session(self, request, pk=None):
+        """
+        Renew an expired or expiring payment session
+        Available to payment owner and staff
+        """
+        payment = self.get_object()
+
+        if not payment.is_renewable:
+            # Better error message
+            if payment.status == "paid":
+                reason = "Payment is already paid"
+            elif (
+                payment.status == "pending"
+                and payment.session_id
+                and not payment.is_expired
+            ):
+                reason = "Payment has an active session"
+            else:
+                reason = f"Payment status is '{payment.status}'"
+
+            return Response(
+                {
+                    "error": "Payment cannot be renewed",
+                    "reason": reason,
+                    "current_status": payment.status,
+                    "has_session": bool(payment.session_id),
+                    "is_expired": payment.is_expired,
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # Renew the session using StripeService
+        renewal_result = StripeService.renew_checkout_session(payment, request)
+
+        if renewal_result.get("success"):
+            # 🔧 Update the payment record
+            payment.session_id = renewal_result.get("session_id")
+            payment.session_url = renewal_result.get("session_url")
+            payment.status = "pending"
+            payment.session_expires_at = kyiv_now() + timedelta(
+                hours=24
+            )  # adjust duration if needed
+            payment.save(
+                update_fields=[
+                    "session_id",
+                    "session_url",
+                    "status",
+                    "session_expires_at",
+                ]
+            )
+
+            # Return updated payment details
+            response_serializer = PaymentDetailSerializer(payment)
+            return Response(
+                {
+                    "message": "Payment session renewed successfully",
+                    "payment": response_serializer.data,
+                },
+                status=status.HTTP_200_OK,
+            )
+
+        return Response(
+            {
+                "error": f'Failed to renew payment session: {renewal_result.get("error", "Unknown error")}'
+            },
+            status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        )
+
+    @action(detail=True, methods=["get"])
+    def session_status(self, request, pk=None):
+        """
+        Get detailed session status from Stripe
+        Available to payment owner and staff
+        """
+        payment = self.get_object()
+
+        if not payment.session_id:
+            return Response(
+                {"error": "No Stripe session found for this payment"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # Get session status from Stripe
+        session_status = StripeService.get_session_status(payment.session_id)
+
+        if not session_status:
+            return Response(
+                {"error": "Could not retrieve session status from Stripe"},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
+
+        # Check if payment status needs updating
+        if session_status["payment_status"] == "paid" and payment.status == "pending":
+            payment.status = "paid"
+            payment.save()
+        elif session_status["status"] == "expired" and payment.status == "pending":
+            payment.expire_session()
+
+        return Response(
+            {
+                "payment_id": payment.id,
+                "payment_status": payment.status,
+                "stripe_session": session_status,
+                "is_renewable": payment.is_renewable,
+                "expires_at": (
+                    payment.session_expires_at.isoformat()
+                    if payment.session_expires_at
+                    else None
+                ),
+                "time_until_expiry": self._get_time_until_expiry(payment),
+            }
+        )
+
+    def _get_time_until_expiry(self, payment):
+        """Helper method to calculate time until session expiry"""
+        if not payment.session_expires_at:
+            return None
+
+        now = timezone.now()
+        if payment.session_expires_at <= now:
+            return "Expired"
+
+        time_diff = payment.session_expires_at - now
+        hours = int(time_diff.total_seconds() // 3600)
+        minutes = int((time_diff.total_seconds() % 3600) // 60)
+
+        if hours > 0:
+            return f"{hours}h {minutes}m"
+        else:
+            return f"{minutes}m"
+
+    @action(detail=False, methods=["get"])
+    def expired_payments(self, request):
+        """
+        Get all expired payments for current user (or all if staff)
+        """
+        user = request.user
+
+        if user.is_staff:
+            expired_payments = Payment.objects.select_related(
+                "borrowing__book", "borrowing__user"
+            ).filter(status="expired")
+        else:
+            expired_payments = Payment.objects.select_related(
+                "borrowing__book", "borrowing__user"
+            ).filter(borrowing__user=user, status="expired")
+
+        serializer = PaymentSerializer(expired_payments, many=True)
+        return Response(
+            {"count": expired_payments.count(), "payments": serializer.data}
+        )
+
+    @action(detail=False, methods=["get"])
+    def renewable_payments(self, request):
+        """
+        Get all renewable payments for current user (expired or pending with expired sessions)
+        """
+        user = request.user
+        now = timezone.now().astimezone(KYIV_TZ)
+
+        if user.is_staff:
+            # Staff can see all renewable payments
+            base_queryset = Payment.objects.select_related(
+                "borrowing__book", "borrowing__user"
+            )
+        else:
+            # Regular users see only their renewable payments
+            base_queryset = Payment.objects.select_related(
+                "borrowing__book", "borrowing__user"
+            ).filter(borrowing__user=user)
+
+            # Get renewable payments with proper handling of null expiration dates
+        renewable_payments = base_queryset.filter(
+            models.Q(status="expired")  # Already expired
+            | models.Q(
+                status="pending", session_expires_at__lte=now
+            )  # Pending with expired session
+            | models.Q(
+                status="pending",
+                session_expires_at__isnull=True,
+                session_id__isnull=False,
+            )
+            # OLD pending payments without expiration tracking
+        )
+
+        serializer = PaymentSerializer(renewable_payments, many=True)
+
+        # Add helpful information about each payment
+        payment_info = []
+        for payment_data, payment_obj in zip(serializer.data, renewable_payments):
+            info = dict(payment_data)
+
+            # Add renewal reason
+            if payment_obj.status == "expired":
+                info["renewal_reason"] = "Payment session is expired"
+            elif (
+                payment_obj.session_expires_at and payment_obj.session_expires_at <= now
+            ):
+                info["renewal_reason"] = "Payment session has expired"
+            elif payment_obj.session_expires_at is None and payment_obj.session_id:
+                info["renewal_reason"] = (
+                    "Old payment without expiration tracking - likely expired"
+                )
+            else:
+                info["renewal_reason"] = "Payment is renewable"
+
+            payment_info.append(info)
+
+        return Response(
+            {
+                "count": renewable_payments.count(),
+                "payments": payment_info,
+                "message": "These payments can be renewed with new Stripe sessions",
+                "note": "Payments without session_expires_at are from before expiration tracking was implemented",
+            }
+        )
+
+    @action(detail=False, methods=["post"])
+    def bulk_check_sessions(self, request):
+        """
+        Check session status for multiple payments (staff only)
+        Useful for manual verification of payment states
+        """
+        if not request.user.is_staff:
+            return Response(
+                {"error": "Only staff can perform bulk session checks"},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        payment_ids = request.data.get("payment_ids", [])
+        if not payment_ids:
+            return Response(
+                {"error": "payment_ids list is required"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        results = []
+        updated_count = 0
+
+        for payment_id in payment_ids:
+            try:
+                payment = Payment.objects.get(id=payment_id)
+
+                if not payment.session_id:
+                    results.append(
+                        {
+                            "payment_id": payment_id,
+                            "status": "no_session",
+                            "message": "No Stripe session ID",
+                        }
+                    )
+                    continue
+
+                session_status = StripeService.get_session_status(payment.session_id)
+
+                if not session_status:
+                    results.append(
+                        {
+                            "payment_id": payment_id,
+                            "status": "error",
+                            "message": "Could not retrieve session from Stripe",
+                        }
+                    )
+                    continue
+
+                # Update payment status if needed
+                old_status = payment.status
+
+                if (
+                    session_status["payment_status"] == "paid"
+                    and payment.status != "paid"
+                ):
+                    payment.status = "paid"
+                    payment.save()
+                    updated_count += 1
+                elif (
+                    session_status["status"] == "expired"
+                    and payment.status == "pending"
+                ):
+                    payment.expire_session()
+                    updated_count += 1
+
+                results.append(
+                    {
+                        "payment_id": payment_id,
+                        "old_status": old_status,
+                        "new_status": payment.status,
+                        "stripe_status": session_status["status"],
+                        "stripe_payment_status": session_status["payment_status"],
+                        "updated": old_status != payment.status,
+                    }
+                )
+
+            except Payment.DoesNotExist:
+                results.append(
+                    {
+                        "payment_id": payment_id,
+                        "status": "not_found",
+                        "message": "Payment not found",
+                    }
+                )
+            except Exception as e:
+                results.append(
+                    {"payment_id": payment_id, "status": "error", "message": str(e)}
+                )
+
+        return Response(
+            {
+                "message": f"Checked {len(payment_ids)} payments, updated {updated_count}",
+                "updated_count": updated_count,
+                "total_checked": len(payment_ids),
+                "results": results,
+            }
+        )
+
+    @action(detail=False, methods=["post"])
+    def force_expire_session(self, request):
+        """
+        Manually mark a payment session as expired (staff only, for testing/admin purposes)
+        """
+        if not request.user.is_staff:
+            return Response(
+                {"error": "Only staff can force expire sessions"},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        payment_id = request.data.get("payment_id")
+        if not payment_id:
+            return Response(
+                {"error": "payment_id is required"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            payment = Payment.objects.get(id=payment_id)
+
+            if payment.status == "paid":
+                return Response(
+                    {"error": "Cannot expire paid payments"},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+            old_status = payment.status
+            payment.expire_session()
+
+            return Response(
+                {
+                    "message": f"Payment {payment_id} session marked as expired",
+                    "payment_id": payment_id,
+                    "old_status": old_status,
+                    "new_status": payment.status,
+                }
+            )
+
+        except Payment.DoesNotExist:
+            return Response(
+                {"error": "Payment not found"},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+    @extend_schema(
+        parameters=[
+            OpenApiParameter(
+                "status",
+                type=str,
+                description="Filter by status: pending, paid, expired (ex. ?status=paid)",
+            )
+        ]
+    )
+    def list(self, request, *args, **kwargs):
+        """Get list of payments"""
+        return super().list(request, args, **kwargs)
+
+    # def list(self, request, *args, **kwargs):
+    #     from django.db import reset_queries, connection
+    #
+    #     # before = len(connection.queries)
+    #     # response = super().list(request, *args, **kwargs)
+    #     # after = len(connection.queries)
+    #     # print("QUERIES EXECUTED:", after - before)
+    #
+    #     reset_queries()
+    #
+    #     print("\n" + "=" * 80)
+    #     print("STARTING LIST REQUEST")
+    #     print("=" * 80)
+    #
+    #     response = super().list(request, *args, **kwargs)
+    #
+    #     print("\n" + "=" * 80)
+    #     print(f"TOTAL QUERIES: {len(connection.queries)}")
+    #     print("=" * 80)
+    #
+    #     for i, query in enumerate(connection.queries, 1):
+    #         sql = query['sql']
+    #         print(f"\nQuery {i} [{query['time']}s]:")
+    #         print(sql[:4000])
+    #
+    #         # ✅ Better detection - check for WHERE with single ID (N+1 pattern)
+    #         if 'users_user' in sql and 'WHERE "users_user"."id" =' in sql:
+    #             print("⚠️  INDIVIDUAL USER QUERY - N+1 DETECTED")
+    #         if 'books_book' in sql and 'WHERE "books_book"."id" =' in sql:
+    #             print("⚠️  INDIVIDUAL BOOK QUERY - N+1 DETECTED")
+    #         if 'borrowings_borrowing' in sql and 'LIMIT 1000' in sql and 'payments_payment' not in sql:
+    #             print("⚠️  MYSTERY BORROWING QUERY")
+    #
+    #         # Find the mystery borrowing query
+    #         if 'borrowings_borrowing' in sql and 'LIMIT 1000' in sql and 'payments_payment' not in sql:
+    #             print("\n⚠️⚠️⚠️ MYSTERY BORROWING QUERY FOUND ⚠️⚠️⚠️")
+    #             print("This query shouldn't be here!")
+    #             # Print stack trace from query
+    #             if 'stack' in query:
+    #                 print("\nStack trace:")
+    #                 print(query['stack'])
+    #
+    #     print("\n" + "=" * 80)
+    #
+    #     return response
+
+    # def list(self, request, *args, **kwargs):
+    #     from django.db import reset_queries, connection
+    #
+    #     reset_queries()
+    #
+    #     # Add breakpoint before serialization
+    #     queryset = self.filter_queryset(self.get_queryset())
+    #     print(f"Queryset evaluated: {len(connection.queries)} queries")
+    #
+    #     page = self.paginate_queryset(queryset)
+    #     print(f"After pagination: {len(connection.queries)} queries")
+    #
+    #     serializer = self.get_serializer(page, many=True)
+    #     print(f"After serializer init: {len(connection.queries)} queries")
+    #
+    #     data = serializer.data
+    #     print(f"After serializer.data: {len(connection.queries)} queries")
+    #
+    #     response = self.get_paginated_response(data)
+    #     print(f"After response: {len(connection.queries)} queries")
+    #
+    #     print("\n=== QUERIES ===")
+    #     for i, q in enumerate(connection.queries, 1):
+    #         print(f"{i}. {q['sql'][:200]}")
+    #
+    #     return response
+    #
+    # def retrieve(self, request, *args, **kwargs):
+    #     """Debug retrieve to see query count"""
+    #     from django.db import reset_queries, connection
+    #
+    #     reset_queries()
+    #
+    #     print("\n" + "=" * 80)
+    #     print("STARTING PAYMENT RETRIEVE")
+    #     print("=" * 80)
+    #
+    #     response = super().retrieve(request, *args, **kwargs)
+    #
+    #     print("\n" + "=" * 80)
+    #     print(f"TOTAL QUERIES: {len(connection.queries)}")
+    #     print("=" * 80)
+    #
+    #     for i, query in enumerate(connection.queries, 1):
+    #         sql = query['sql']
+    #         print(f"\nQuery {i} [{query['time']}s]:")
+    #         print(sql[:500])
+    #
+    #         # Detect N+1 patterns
+    #         if 'payments_payment' in sql and 'WHERE "payments_payment"."id" =' in sql:
+    #             print("⚠️  INDIVIDUAL PAYMENT QUERY - N+1 DETECTED")
+    #
+    #     print("\n" + "=" * 80)
+    #
+    #     return response
+
+
+@api_view(["GET"])
+def payment_success(request):
+    """Confirm that the Stripe session was paid and update Payment status"""
+    session_id = request.query_params.get("session_id")
+    if not session_id:
+        return Response(
+            {
+                "error": "Missing session_id",
+                "message": "Payment verification failed. Please contact support.",
+            },
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    try:
+        session = StripeService.retrieve_checkout_session(session_id)
+        if not session:
+            return Response(
+                {
+                    "error": "Could not retrieve session",
+                    "message": "Payment session not found. Please contact support.",
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if session.payment_status == "paid":
+            try:
+                payment = get_object_or_404(Payment, session_id=session_id)
+                if payment.status != "paid":
+                    payment.status = "paid"
+                    payment.save()
+
+                return Response(
+                    {
+                        "message": "Payment successful! Your borrowing has been confirmed.",
+                        "payment_id": payment.id,
+                        "status": "paid",
+                    }
+                )
+            except Payment.DoesNotExist:
+                return Response(
+                    {
+                        "error": "Payment record not found",
+                        "message": "Payment was processed but record not found. Please contact support.",
+                    },
+                    status=status.HTTP_404_NOT_FOUND,
+                )
+        else:
+            return Response(
+                {
+                    "message": "Payment not completed yet. Please try again or contact support.",
+                    "session_status": session.payment_status,
+                },
+                status=status.HTTP_202_ACCEPTED,
+            )
+
+    except Exception as e:
+        logger.error(f"Error processing payment success for session {session_id}: {e}")
+        return Response(
+            {
+                "error": "Payment verification failed",
+                "message": "An error occurred while verifying your payment. Please contact support.",
+            },
+            status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        )
+
+
+@api_view(["GET"])
+def payment_cancel(request):
+    """Communicate to the user that payment can be made later (session valid for 24h)"""
+    session_id = request.query_params.get("session_id")
+
+    response_data = {
+        "message": "Payment was canceled. You can complete your payment later using the same checkout session.",
+        "note": "Your checkout session will remain valid for 24 hours.",
+        "action": "You can return to complete the payment anytime within this period.",
+    }
+
+    # Optionally include session info if provided
+    if session_id:
+        try:
+            payment = Payment.objects.filter(session_id=session_id).first()
+            if payment:
+                response_data.update(
+                    {
+                        "payment_id": payment.id,
+                        "session_url": payment.session_url,
+                        "amount": str(payment.money_to_pay),
+                    }
+                )
+        except Exception as e:
+            logger.error(
+                f"Error retrieving payment info for canceled session {session_id}: {e}"
+            )
+
+    return Response(response_data)

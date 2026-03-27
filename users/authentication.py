@@ -10,7 +10,9 @@ class AuthorizeHeaderJWTAuthentication(JWTAuthentication):
     """
 
     def get_header(self, request):
-        header = request.META.get("HTTP_AUTHORIZE")  # Django converts headers to HTTP_<NAME>
+        header = request.META.get(
+            "HTTP_AUTHORIZE"
+        )  # Django converts headers to HTTP_<NAME>
         if isinstance(header, str):
             header = header.encode("iso-8859-1")  # ensure it's bytes
         return header

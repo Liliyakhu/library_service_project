@@ -1,0 +1,1741 @@
+openapi: 3.0.3
+info:
+  title: Library Service API
+  version: 1.0.0
+  description: Online management system for book borrowings
+paths:
+  /api/books/:
+    get:
+      operationId: books_list
+      parameters:
+      - name: page
+        required: false
+        in: query
+        description: A page number within the paginated result set.
+        schema:
+          type: integer
+      tags:
+      - books
+      security:
+      - Authorize: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginatedBookList'
+          description: ''
+    post:
+      operationId: books_create
+      tags:
+      - books
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BookRequest'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/BookRequest'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/BookRequest'
+        required: true
+      security:
+      - Authorize: []
+      responses:
+        '201':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Book'
+          description: ''
+  /api/books/{id}/:
+    get:
+      operationId: books_retrieve
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: integer
+        description: A unique integer value identifying this book.
+        required: true
+      tags:
+      - books
+      security:
+      - Authorize: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Book'
+          description: ''
+    put:
+      operationId: books_update
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: integer
+        description: A unique integer value identifying this book.
+        required: true
+      tags:
+      - books
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BookRequest'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/BookRequest'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/BookRequest'
+        required: true
+      security:
+      - Authorize: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Book'
+          description: ''
+    patch:
+      operationId: books_partial_update
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: integer
+        description: A unique integer value identifying this book.
+        required: true
+      tags:
+      - books
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PatchedBookRequest'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/PatchedBookRequest'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/PatchedBookRequest'
+      security:
+      - Authorize: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Book'
+          description: ''
+    delete:
+      operationId: books_destroy
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: integer
+        description: A unique integer value identifying this book.
+        required: true
+      tags:
+      - books
+      security:
+      - Authorize: []
+      responses:
+        '204':
+          description: No response body
+  /api/borrowings/:
+    get:
+      operationId: borrowings_list
+      parameters:
+      - name: page
+        required: false
+        in: query
+        description: A page number within the paginated result set.
+        schema:
+          type: integer
+      tags:
+      - borrowings
+      security:
+      - Authorize: []
+      - Authorize: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginatedBorrowingListList'
+          description: ''
+    post:
+      operationId: borrowings_create
+      description: |-
+        Create a new borrowing with proper transaction handling.
+        Entire operation is atomic - if payment fails, borrowing is rolled back.
+        Users cannot borrow if they have any pending payments.
+      tags:
+      - borrowings
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BorrowingCreateRequest'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/BorrowingCreateRequest'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/BorrowingCreateRequest'
+        required: true
+      security:
+      - Authorize: []
+      - Authorize: []
+      responses:
+        '201':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BorrowingCreate'
+          description: ''
+  /api/borrowings/{id}/:
+    get:
+      operationId: borrowings_retrieve
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - borrowings
+      security:
+      - Authorize: []
+      - Authorize: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BorrowingDetail'
+          description: ''
+    put:
+      operationId: borrowings_update
+      description: |-
+        FIX: Allow staff to update certain fields (like expected_return_date).
+        Regular users still cannot update.
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - borrowings
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BorrowingUpdateRequest'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/BorrowingUpdateRequest'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/BorrowingUpdateRequest'
+        required: true
+      security:
+      - Authorize: []
+      - Authorize: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BorrowingUpdate'
+          description: ''
+    patch:
+      operationId: borrowings_partial_update
+      description: Allow partial updates with same restrictions as full update
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - borrowings
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PatchedBorrowingUpdateRequest'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/PatchedBorrowingUpdateRequest'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/PatchedBorrowingUpdateRequest'
+      security:
+      - Authorize: []
+      - Authorize: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BorrowingUpdate'
+          description: ''
+    delete:
+      operationId: borrowings_destroy
+      description: 'FIX: Only allow staff to delete, and only if no payments exist'
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - borrowings
+      security:
+      - Authorize: []
+      - Authorize: []
+      responses:
+        '204':
+          description: No response body
+  /api/borrowings/{id}/return_book/:
+    post:
+      operationId: borrowings_return_book_create
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - borrowings
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BorrowingDetailRequest'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/BorrowingDetailRequest'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/BorrowingDetailRequest'
+        required: true
+      security:
+      - Authorize: []
+      - Authorize: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BorrowingDetail'
+          description: ''
+  /api/borrowings/can_borrow/:
+    get:
+      operationId: borrowings_can_borrow_retrieve
+      description: |-
+        Check if the current user can create a new borrowing.
+        Returns borrowing eligibility and pending payment details.
+      tags:
+      - borrowings
+      security:
+      - Authorize: []
+      - Authorize: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BorrowingDetail'
+          description: ''
+  /api/payments/:
+    get:
+      operationId: payments_list
+      description: ViewSet for managing payments
+      parameters:
+      - name: page
+        required: false
+        in: query
+        description: A page number within the paginated result set.
+        schema:
+          type: integer
+      tags:
+      - payments
+      security:
+      - Authorize: []
+      - Authorize: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginatedPaymentList'
+          description: ''
+    post:
+      operationId: payments_create
+      description: Create a new payment and Stripe checkout session
+      tags:
+      - payments
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PaymentCreateRequest'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/PaymentCreateRequest'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/PaymentCreateRequest'
+        required: true
+      security:
+      - Authorize: []
+      - Authorize: []
+      responses:
+        '201':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaymentCreate'
+          description: ''
+  /api/payments/{id}/:
+    get:
+      operationId: payments_retrieve
+      description: ViewSet for managing payments
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - payments
+      security:
+      - Authorize: []
+      - Authorize: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaymentDetail'
+          description: ''
+    put:
+      operationId: payments_update
+      description: Prevent direct payment updates - should be handled via webhooks
+        or specific actions
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - payments
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PaymentRequest'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/PaymentRequest'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/PaymentRequest'
+      security:
+      - Authorize: []
+      - Authorize: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Payment'
+          description: ''
+    patch:
+      operationId: payments_partial_update
+      description: ViewSet for managing payments
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - payments
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PatchedPaymentRequest'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/PatchedPaymentRequest'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/PatchedPaymentRequest'
+      security:
+      - Authorize: []
+      - Authorize: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Payment'
+          description: ''
+    delete:
+      operationId: payments_destroy
+      description: Only allow deletion of pending payments
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - payments
+      security:
+      - Authorize: []
+      - Authorize: []
+      responses:
+        '204':
+          description: No response body
+  /api/payments/{id}/check_session/:
+    post:
+      operationId: payments_check_session_create
+      description: Check the status of a Stripe payment session
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - payments
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PaymentRequest'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/PaymentRequest'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/PaymentRequest'
+      security:
+      - Authorize: []
+      - Authorize: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Payment'
+          description: ''
+  /api/payments/{id}/mark_paid/:
+    post:
+      operationId: payments_mark_paid_create
+      description: Manually mark a payment as paid (staff only)
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - payments
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PaymentRequest'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/PaymentRequest'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/PaymentRequest'
+      security:
+      - Authorize: []
+      - Authorize: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Payment'
+          description: ''
+  /api/payments/{id}/renew_session/:
+    post:
+      operationId: payments_renew_session_create
+      description: |-
+        Renew an expired or expiring payment session
+        Available to payment owner and staff
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - payments
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PaymentRequest'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/PaymentRequest'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/PaymentRequest'
+      security:
+      - Authorize: []
+      - Authorize: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Payment'
+          description: ''
+  /api/payments/{id}/session_status/:
+    get:
+      operationId: payments_session_status_retrieve
+      description: |-
+        Get detailed session status from Stripe
+        Available to payment owner and staff
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - payments
+      security:
+      - Authorize: []
+      - Authorize: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Payment'
+          description: ''
+  /api/payments/bulk_check_sessions/:
+    post:
+      operationId: payments_bulk_check_sessions_create
+      description: |-
+        Check session status for multiple payments (staff only)
+        Useful for manual verification of payment states
+      tags:
+      - payments
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PaymentRequest'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/PaymentRequest'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/PaymentRequest'
+      security:
+      - Authorize: []
+      - Authorize: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Payment'
+          description: ''
+  /api/payments/cancel/:
+    get:
+      operationId: payments_cancel_retrieve
+      description: Communicate to the user that payment can be made later (session
+        valid for 24h)
+      tags:
+      - payments
+      security:
+      - Authorize: []
+      - Authorize: []
+      responses:
+        '200':
+          description: No response body
+  /api/payments/create_fine_for_borrowing/:
+    post:
+      operationId: payments_create_fine_for_borrowing_create
+      description: Create fine payment for a specific borrowing (staff only)
+      tags:
+      - payments
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PaymentRequest'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/PaymentRequest'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/PaymentRequest'
+      security:
+      - Authorize: []
+      - Authorize: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Payment'
+          description: ''
+  /api/payments/create_test_sessions/:
+    post:
+      operationId: payments_create_test_sessions_create
+      description: Create test Stripe sessions (development only)
+      tags:
+      - payments
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PaymentRequest'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/PaymentRequest'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/PaymentRequest'
+      security:
+      - Authorize: []
+      - Authorize: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Payment'
+          description: ''
+  /api/payments/expired_payments/:
+    get:
+      operationId: payments_expired_payments_retrieve
+      description: Get all expired payments for current user (or all if staff)
+      tags:
+      - payments
+      security:
+      - Authorize: []
+      - Authorize: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Payment'
+          description: ''
+  /api/payments/force_expire_session/:
+    post:
+      operationId: payments_force_expire_session_create
+      description: Manually mark a payment session as expired (staff only, for testing/admin
+        purposes)
+      tags:
+      - payments
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PaymentRequest'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/PaymentRequest'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/PaymentRequest'
+      security:
+      - Authorize: []
+      - Authorize: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Payment'
+          description: ''
+  /api/payments/my_fines/:
+    get:
+      operationId: payments_my_fines_retrieve
+      description: Get current user's fine payments
+      tags:
+      - payments
+      security:
+      - Authorize: []
+      - Authorize: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Payment'
+          description: ''
+  /api/payments/my_payments/:
+    get:
+      operationId: payments_my_payments_retrieve
+      description: Get current user's payments
+      tags:
+      - payments
+      security:
+      - Authorize: []
+      - Authorize: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Payment'
+          description: ''
+  /api/payments/renewable_payments/:
+    get:
+      operationId: payments_renewable_payments_retrieve
+      description: Get all renewable payments for current user (expired or pending
+        with expired sessions)
+      tags:
+      - payments
+      security:
+      - Authorize: []
+      - Authorize: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Payment'
+          description: ''
+  /api/payments/success/:
+    get:
+      operationId: payments_success_retrieve
+      description: Confirm that the Stripe session was paid and update Payment status
+      tags:
+      - payments
+      security:
+      - Authorize: []
+      - Authorize: []
+      responses:
+        '200':
+          description: No response body
+  /api/payments/sync_with_stripe/:
+    post:
+      operationId: payments_sync_with_stripe_create
+      description: Check all pending payments against Stripe and update statuses
+      tags:
+      - payments
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PaymentRequest'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/PaymentRequest'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/PaymentRequest'
+      security:
+      - Authorize: []
+      - Authorize: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Payment'
+          description: ''
+  /api/payments/test_webhook/:
+    post:
+      operationId: payments_test_webhook_create
+      description: Test webhook functionality (development only)
+      tags:
+      - payments
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PaymentRequest'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/PaymentRequest'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/PaymentRequest'
+      security:
+      - Authorize: []
+      - Authorize: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Payment'
+          description: ''
+  /api/payments/webhook_events/:
+    get:
+      operationId: payments_webhook_events_retrieve
+      description: Get recent webhook events for debugging (staff only)
+      tags:
+      - payments
+      security:
+      - Authorize: []
+      - Authorize: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Payment'
+          description: ''
+  /api/users/me/:
+    get:
+      operationId: users_me_retrieve
+      tags:
+      - users
+      security:
+      - Authorize: []
+      - Authorize: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/User'
+          description: ''
+    put:
+      operationId: users_me_update
+      tags:
+      - users
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UserRequest'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/UserRequest'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/UserRequest'
+        required: true
+      security:
+      - Authorize: []
+      - Authorize: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/User'
+          description: ''
+    patch:
+      operationId: users_me_partial_update
+      tags:
+      - users
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PatchedUserRequest'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/PatchedUserRequest'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/PatchedUserRequest'
+      security:
+      - Authorize: []
+      - Authorize: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/User'
+          description: ''
+  /api/users/register/:
+    post:
+      operationId: users_register_create
+      tags:
+      - users
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UserRequest'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/UserRequest'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/UserRequest'
+        required: true
+      security:
+      - Authorize: []
+      - Authorize: []
+      - {}
+      responses:
+        '201':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/User'
+          description: ''
+  /api/users/token/:
+    post:
+      operationId: users_token_create
+      description: |-
+        Takes a set of user credentials and returns an access and refresh JSON web
+        token pair to prove the authentication of those credentials.
+      tags:
+      - users
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TokenObtainPairRequest'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/TokenObtainPairRequest'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/TokenObtainPairRequest'
+        required: true
+      security:
+      - Authorize: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TokenObtainPair'
+          description: ''
+  /api/users/token/refresh/:
+    post:
+      operationId: users_token_refresh_create
+      description: |-
+        Takes a refresh type JSON web token and returns an access type JSON web
+        token if the refresh token is valid.
+      tags:
+      - users
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TokenRefreshRequest'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/TokenRefreshRequest'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/TokenRefreshRequest'
+        required: true
+      security:
+      - Authorize: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TokenRefresh'
+          description: ''
+  /api/users/token/verify/:
+    post:
+      operationId: users_token_verify_create
+      description: |-
+        Takes a token and indicates if it is valid.  This view provides no
+        information about a token's fitness for a particular use.
+      tags:
+      - users
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TokenVerifyRequest'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/TokenVerifyRequest'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/TokenVerifyRequest'
+        required: true
+      security:
+      - Authorize: []
+      responses:
+        '200':
+          description: No response body
+components:
+  schemas:
+    Book:
+      type: object
+      properties:
+        id:
+          type: integer
+          readOnly: true
+        title:
+          type: string
+          maxLength: 100
+        author:
+          type: string
+          maxLength: 100
+        cover:
+          $ref: '#/components/schemas/CoverEnum'
+        inventory:
+          type: integer
+          maximum: 9223372036854775807
+          minimum: 0
+          format: int64
+        daily_fee:
+          type: string
+          format: decimal
+          pattern: ^-?\d{0,3}(?:\.\d{0,2})?$
+      required:
+      - author
+      - daily_fee
+      - id
+      - title
+    BookRequest:
+      type: object
+      properties:
+        title:
+          type: string
+          minLength: 1
+          maxLength: 100
+        author:
+          type: string
+          minLength: 1
+          maxLength: 100
+        cover:
+          $ref: '#/components/schemas/CoverEnum'
+        inventory:
+          type: integer
+          maximum: 9223372036854775807
+          minimum: 0
+          format: int64
+        daily_fee:
+          type: string
+          format: decimal
+          pattern: ^-?\d{0,3}(?:\.\d{0,2})?$
+      required:
+      - author
+      - daily_fee
+      - title
+    BorrowingCreate:
+      type: object
+      properties:
+        expected_return_date:
+          type: string
+          format: date
+        book:
+          type: integer
+      required:
+      - book
+      - expected_return_date
+    BorrowingCreateRequest:
+      type: object
+      properties:
+        expected_return_date:
+          type: string
+          format: date
+        book:
+          type: integer
+      required:
+      - book
+      - expected_return_date
+    BorrowingDetail:
+      type: object
+      description: Detailed read serializer for Borrowing with full book information
+      properties:
+        id:
+          type: integer
+          readOnly: true
+        borrow_date:
+          type: string
+          format: date
+        expected_return_date:
+          type: string
+          format: date
+        actual_return_date:
+          type: string
+          format: date
+          nullable: true
+        book:
+          allOf:
+          - $ref: '#/components/schemas/Book'
+          readOnly: true
+        user_email:
+          type: string
+          readOnly: true
+        is_returned:
+          type: boolean
+          readOnly: true
+        is_overdue:
+          type: boolean
+          readOnly: true
+        days_overdue:
+          type: integer
+          readOnly: true
+        borrowing_days:
+          type: integer
+          readOnly: true
+        payment_fee:
+          type: string
+          format: decimal
+          pattern: ^-?\d{0,6}(?:\.\d{0,2})?$
+          readOnly: true
+        fine_fee:
+          type: string
+          format: decimal
+          pattern: ^-?\d{0,6}(?:\.\d{0,2})?$
+          readOnly: true
+        total_amount_due:
+          type: string
+          format: decimal
+          pattern: ^-?\d{0,6}(?:\.\d{0,2})?$
+          readOnly: true
+        was_returned_late:
+          type: boolean
+          readOnly: true
+        needs_fine_payment:
+          type: boolean
+          readOnly: true
+        payments:
+          type: array
+          items:
+            $ref: '#/components/schemas/Payment'
+          readOnly: true
+      required:
+      - book
+      - borrowing_days
+      - days_overdue
+      - expected_return_date
+      - fine_fee
+      - id
+      - is_overdue
+      - is_returned
+      - needs_fine_payment
+      - payment_fee
+      - payments
+      - total_amount_due
+      - user_email
+      - was_returned_late
+    BorrowingDetailRequest:
+      type: object
+      description: Detailed read serializer for Borrowing with full book information
+      properties:
+        borrow_date:
+          type: string
+          format: date
+        expected_return_date:
+          type: string
+          format: date
+        actual_return_date:
+          type: string
+          format: date
+          nullable: true
+      required:
+      - expected_return_date
+    BorrowingList:
+      type: object
+      description: Simplified serializer for listing borrowings
+      properties:
+        id:
+          type: integer
+          readOnly: true
+        borrow_date:
+          type: string
+          format: date
+        expected_return_date:
+          type: string
+          format: date
+        actual_return_date:
+          type: string
+          format: date
+          nullable: true
+        book_title:
+          type: string
+          readOnly: true
+        book_author:
+          type: string
+          readOnly: true
+        is_returned:
+          type: boolean
+          readOnly: true
+        is_overdue:
+          type: boolean
+          readOnly: true
+      required:
+      - book_author
+      - book_title
+      - expected_return_date
+      - id
+      - is_overdue
+      - is_returned
+    BorrowingUpdate:
+      type: object
+      description: 'FIX: Serializer for staff updates - only allow certain fields'
+      properties:
+        expected_return_date:
+          type: string
+          format: date
+      required:
+      - expected_return_date
+    BorrowingUpdateRequest:
+      type: object
+      description: 'FIX: Serializer for staff updates - only allow certain fields'
+      properties:
+        expected_return_date:
+          type: string
+          format: date
+      required:
+      - expected_return_date
+    CoverEnum:
+      enum:
+      - hard
+      - soft
+      type: string
+      description: |-
+        * `hard` - Hard
+        * `soft` - Soft
+    PaginatedBookList:
+      type: object
+      required:
+      - count
+      - results
+      properties:
+        count:
+          type: integer
+          example: 123
+        next:
+          type: string
+          nullable: true
+          format: uri
+          example: http://api.example.org/accounts/?page=4
+        previous:
+          type: string
+          nullable: true
+          format: uri
+          example: http://api.example.org/accounts/?page=2
+        results:
+          type: array
+          items:
+            $ref: '#/components/schemas/Book'
+    PaginatedBorrowingListList:
+      type: object
+      required:
+      - count
+      - results
+      properties:
+        count:
+          type: integer
+          example: 123
+        next:
+          type: string
+          nullable: true
+          format: uri
+          example: http://api.example.org/accounts/?page=4
+        previous:
+          type: string
+          nullable: true
+          format: uri
+          example: http://api.example.org/accounts/?page=2
+        results:
+          type: array
+          items:
+            $ref: '#/components/schemas/BorrowingList'
+    PaginatedPaymentList:
+      type: object
+      required:
+      - count
+      - results
+      properties:
+        count:
+          type: integer
+          example: 123
+        next:
+          type: string
+          nullable: true
+          format: uri
+          example: http://api.example.org/accounts/?page=4
+        previous:
+          type: string
+          nullable: true
+          format: uri
+          example: http://api.example.org/accounts/?page=2
+        results:
+          type: array
+          items:
+            $ref: '#/components/schemas/Payment'
+    PatchedBookRequest:
+      type: object
+      properties:
+        title:
+          type: string
+          minLength: 1
+          maxLength: 100
+        author:
+          type: string
+          minLength: 1
+          maxLength: 100
+        cover:
+          $ref: '#/components/schemas/CoverEnum'
+        inventory:
+          type: integer
+          maximum: 9223372036854775807
+          minimum: 0
+          format: int64
+        daily_fee:
+          type: string
+          format: decimal
+          pattern: ^-?\d{0,3}(?:\.\d{0,2})?$
+    PatchedBorrowingUpdateRequest:
+      type: object
+      description: 'FIX: Serializer for staff updates - only allow certain fields'
+      properties:
+        expected_return_date:
+          type: string
+          format: date
+    PatchedPaymentRequest:
+      type: object
+      description: Serializer for Payment model
+      properties:
+        status:
+          $ref: '#/components/schemas/StatusEnum'
+        type:
+          $ref: '#/components/schemas/TypeEnum'
+    PatchedUserRequest:
+      type: object
+      properties:
+        email:
+          type: string
+          format: email
+          minLength: 1
+          title: Email address
+          maxLength: 254
+        password:
+          type: string
+          writeOnly: true
+          minLength: 5
+          maxLength: 128
+        first_name:
+          type: string
+          maxLength: 150
+        last_name:
+          type: string
+          maxLength: 150
+    Payment:
+      type: object
+      description: Serializer for Payment model
+      properties:
+        id:
+          type: integer
+          readOnly: true
+        status:
+          $ref: '#/components/schemas/StatusEnum'
+        type:
+          $ref: '#/components/schemas/TypeEnum'
+        borrowing_id:
+          type: integer
+          readOnly: true
+        book_title:
+          type: string
+          readOnly: true
+        user_email:
+          type: string
+          readOnly: true
+        session_url:
+          type: string
+          format: uri
+          readOnly: true
+          nullable: true
+        session_id:
+          type: string
+          readOnly: true
+          nullable: true
+        money_to_pay:
+          type: string
+          format: decimal
+          pattern: ^-?\d{0,5}(?:\.\d{0,2})?$
+          readOnly: true
+        created_at:
+          type: string
+          format: date-time
+          readOnly: true
+        session_expires_at:
+          type: string
+          format: date-time
+          readOnly: true
+          nullable: true
+        is_expired:
+          type: string
+          readOnly: true
+        is_renewable:
+          type: string
+          readOnly: true
+        time_until_expiry:
+          type: string
+          readOnly: true
+      required:
+      - book_title
+      - borrowing_id
+      - created_at
+      - id
+      - is_expired
+      - is_renewable
+      - money_to_pay
+      - session_expires_at
+      - session_id
+      - session_url
+      - time_until_expiry
+      - user_email
+    PaymentCreate:
+      type: object
+      description: Serializer for creating payments
+      properties:
+        borrowing:
+          type: integer
+        type:
+          $ref: '#/components/schemas/TypeEnum'
+      required:
+      - borrowing
+    PaymentCreateRequest:
+      type: object
+      description: Serializer for creating payments
+      properties:
+        borrowing:
+          type: integer
+        type:
+          $ref: '#/components/schemas/TypeEnum'
+      required:
+      - borrowing
+    PaymentDetail:
+      type: object
+      description: Detailed serializer for individual payment view
+      properties:
+        id:
+          type: integer
+          readOnly: true
+        status:
+          allOf:
+          - $ref: '#/components/schemas/StatusEnum'
+          default: pending
+        type:
+          allOf:
+          - $ref: '#/components/schemas/TypeEnum'
+          default: payment
+        borrowing:
+          type: integer
+        borrowing_details:
+          type: string
+          readOnly: true
+        session_url:
+          type: string
+          format: uri
+          readOnly: true
+          nullable: true
+        session_id:
+          type: string
+          readOnly: true
+          nullable: true
+        money_to_pay:
+          type: string
+          format: decimal
+          pattern: ^-?\d{0,5}(?:\.\d{0,2})?$
+          readOnly: true
+        created_at:
+          type: string
+          format: date-time
+          readOnly: true
+        session_expires_at:
+          type: string
+          format: date-time
+          readOnly: true
+          nullable: true
+        is_expired:
+          type: string
+          readOnly: true
+        is_renewable:
+          type: string
+          readOnly: true
+        time_until_expiry:
+          type: string
+          readOnly: true
+        session_status_info:
+          type: string
+          readOnly: true
+        new_session_created_at:
+          type: string
+          readOnly: true
+      required:
+      - borrowing
+      - borrowing_details
+      - created_at
+      - id
+      - is_expired
+      - is_renewable
+      - money_to_pay
+      - new_session_created_at
+      - session_expires_at
+      - session_id
+      - session_status_info
+      - session_url
+      - time_until_expiry
+    PaymentRequest:
+      type: object
+      description: Serializer for Payment model
+      properties:
+        status:
+          $ref: '#/components/schemas/StatusEnum'
+        type:
+          $ref: '#/components/schemas/TypeEnum'
+    StatusEnum:
+      enum:
+      - pending
+      - paid
+      - expired
+      type: string
+      description: |-
+        * `pending` - Pending
+        * `paid` - Paid
+        * `expired` - Expired
+    TokenObtainPair:
+      type: object
+      properties:
+        access:
+          type: string
+          readOnly: true
+        refresh:
+          type: string
+          readOnly: true
+      required:
+      - access
+      - refresh
+    TokenObtainPairRequest:
+      type: object
+      properties:
+        email:
+          type: string
+          writeOnly: true
+          minLength: 1
+        password:
+          type: string
+          writeOnly: true
+          minLength: 1
+      required:
+      - email
+      - password
+    TokenRefresh:
+      type: object
+      properties:
+        access:
+          type: string
+          readOnly: true
+      required:
+      - access
+    TokenRefreshRequest:
+      type: object
+      properties:
+        refresh:
+          type: string
+          writeOnly: true
+          minLength: 1
+      required:
+      - refresh
+    TokenVerifyRequest:
+      type: object
+      properties:
+        token:
+          type: string
+          writeOnly: true
+          minLength: 1
+      required:
+      - token
+    TypeEnum:
+      enum:
+      - payment
+      - fine
+      type: string
+      description: |-
+        * `payment` - Payment
+        * `fine` - Fine
+    User:
+      type: object
+      properties:
+        id:
+          type: integer
+          readOnly: true
+        email:
+          type: string
+          format: email
+          title: Email address
+          maxLength: 254
+        first_name:
+          type: string
+          maxLength: 150
+        last_name:
+          type: string
+          maxLength: 150
+        is_staff:
+          type: boolean
+          readOnly: true
+          title: Staff status
+          description: Designates whether the user can log into this admin site.
+      required:
+      - email
+      - id
+      - is_staff
+    UserRequest:
+      type: object
+      properties:
+        email:
+          type: string
+          format: email
+          minLength: 1
+          title: Email address
+          maxLength: 254
+        password:
+          type: string
+          writeOnly: true
+          minLength: 5
+          maxLength: 128
+        first_name:
+          type: string
+          maxLength: 150
+        last_name:
+          type: string
+          maxLength: 150
+      required:
+      - email
+      - password
+  securitySchemes:
+    Authorize:
+      type: apiKey
+      in: header
+      name: Authorize
+      description: |-
+        Paste your JWT access token here (without 'Bearer').
+
+        Example:
+
+            Authorize: <your_access_token>
