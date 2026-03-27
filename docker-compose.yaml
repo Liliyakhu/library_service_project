@@ -1,0 +1,80 @@
+services:
+  db:
+    image: postgres:16.0-alpine3.17
+    env_file:
+      - .env
+    ports:
+      - "5432:5432"
+    volumes:
+      - ./data/db:/var/lib/postgresql/data
+
+  library:
+    build:
+      context: .
+    env_file:
+      - .env
+    ports:
+      - "8000:8000"
+    command: >
+      sh -c "python manage.py wait_for_db &&
+      python manage.py makemigrations &&
+      python manage.py migrate &&
+      python manage.py runserver 0.0.0.0:8000"
+    volumes:
+      - ./:/app
+    depends_on:
+      - db
+
+  redis:
+    image: "redis:alpine"
+
+  celery:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: "celery -A library_service worker -l info"
+    depends_on:
+      - library
+      - redis
+      - db
+    restart: on-failure
+    env_file:
+      - .env
+
+  celery-beat:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: >
+      sh -c "python manage.py wait_for_db &&
+            celery -A library_service beat -l INFO --scheduler django_celery_beat.schedulers:DatabaseScheduler"
+    depends_on:
+      - library
+      - redis
+      - db
+    restart: on-failure
+    env_file:
+      - .env
+
+  flower:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "5555:5555"
+    command: "celery -A library_service flower --address=0.0.0.0"
+    depends_on:
+      - celery
+    env_file:
+      - .env
+
+  stripe-webhook:
+    image: stripe/stripe-cli:latest
+    command: listen --forward-to library:8000/api/payments/webhook/ --skip-verify
+    env_file:
+      - .env
+    depends_on:
+      - library
+    environment:
+      - STRIPE_API_KEY=${STRIPE_SECRET_KEY}
+      - STRIPE_DEVICE_NAME=library_webhook_listener
